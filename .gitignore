@@ -54,3 +54,12 @@ express-server
 
 # Generated from node-unrar-js (scripts/sync-unrar-wasm.mjs)
 /public/vendor/unrar
+
+# Android (mobile/) generated build output -- keep mobile/android checked in, ignore its build artifacts
+mobile/android/**/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/**/*.apk
+mobile/android/**/*.aab
+mobile/android/**/.cxx/
+mobile/android/captures/
