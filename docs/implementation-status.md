@@ -525,6 +525,98 @@ services/acquisition-gateway/src/config.ts.`, exit 0.
 Gate 4 is done. Next in the tracker sequence: t600 (Android vertical slice) and t1000
 (rollout prep), both already unblocked.
 
+## t600 continuation (wi1496-worker-9, 2026-08-24): Tasks 5-6 done, Gradle assembleDebug verified
+
+Picked up after wi1496-worker-8 completed Tasks 1-4 (commits `12f1b370`..`97d6aed3`, see below).
+Delivered the remaining plan scope:
+
+**Task 5 -- Discover + acquisition queue (mobile).** New files: `mobile/src/api/acquisitionClient.ts`
+(bearer-token wrapper around `@abs/acquisition-client`'s `createAcquisitionClient`, with the same
+one-retry-on-401 pattern as `absClient.ts` but refreshing through `SessionStore.refresh()` instead
+of the web app's cookie-based `/internal-api/refresh`), `mobile/src/contexts/AcquisitionContext.tsx`,
+`mobile/src/routes/{DiscoverPage,AcquisitionQueuePage}.tsx`,
+`mobile/src/components/{ReleaseCard,AcquisitionRow,ConfirmDialog}.tsx`. Modified
+`AuthProvider.tsx` (exposes `acquisitionClient`, built lazily once authenticated),
+`App.tsx` (routes + `AcquisitionProvider`), `LibraryPage.tsx` (Discover/Queue nav links),
+`styles.css`. Both `Discover`/`AcquisitionQueuePage` accept an injectable API prop pattern
+mirroring the web app's `DiscoverApi`/`AcquisitionQueueApi` seams. Per-release/per-acquisition
+in-flight state is keyed by opaque `releaseId`/`acquisition.id`, never normalized title
+(FND-00437), matching t500's rule.
+
+**Deliberate deviation from the web app: poll-only, no SSE.** The web app's live queue updates
+work because a same-origin `EventSource` automatically resends the ABS session cookie; ShelfDroid
+carries bearer tokens only, and the stock `EventSource` API cannot attach a custom `Authorization`
+header, so an unauthenticated connection to `/acquisition-api/v1/events` (which only accepts
+`authorization`/`cookie` -- `services/acquisition-gateway/src/auth/absAuth.ts`) would just 401
+forever. `AcquisitionContext.tsx` polls every 10s for actively-viewed libraries unconditionally --
+exactly the web app's own SSE-disconnected fallback, made permanent. Documented inline and in
+`mobile/README.md`.
+
+New tests: `mobile/src/api/acquisitionClient.test.ts` (bearer token attached, 401-refresh-retry,
+constructor guard, error-code mapping), `mobile/src/routes/DiscoverPage.test.tsx`,
+`mobile/src/routes/AcquisitionQueuePage.test.tsx` (search/confirm/idempotency-key, disabled
+non-requestable releases, retry, cancel-with-confirm, Open Book link keyed by `absItemId`).
+Full mobile suite: 8 files / 26 tests passing (`corepack pnpm --filter @abs/mobile test`).
+`corepack pnpm --filter @abs/mobile typecheck` clean. Root-scoped
+`corepack pnpm exec eslint mobile/src` clean.
+
+**Task 6.** `.github/workflows/android.yml` (separate CI job from `ci.yml`'s existing
+`test:workspace`/`typecheck:workspace` -- installs JDK 21 via `actions/setup-java`, builds +
+syncs the mobile bundle, runs `testDebugUnitTest assembleDebug`, uploads the APK artifact).
+`mobile/README.md` (setup, JAVA_HOME toolchain gotcha, architecture notes, known Vite/Android
+gotchas). `mobile/e2e/vertical-slice.spec.ts` + `mobile/playwright.config.ts` +
+`mobile/e2e/support/fakeAbsServer.mjs` (zero-dependency fake ABS + acquisition-gateway backend,
+same spirit as `cypress/e2e/support/fakeAbsServer.mjs` but far simpler since ShelfDroid is a pure
+bearer-token client -- no JWT-shaping, no server-init/status probing needed). Added
+`@abs/mobile`'s `e2e` script + `@playwright/test` devDependency; installed Chromium locally
+(`corepack pnpm --filter @abs/mobile exec playwright install chromium`, ~192MB, succeeded --
+network egress is available on this machine). Also fixed `mobile/vitest.config.ts` (excluded
+`e2e/**` -- vitest's default include glob was picking up the Playwright `*.spec.ts` and failing
+immediately with the wrong test runner globals) and root `eslint.config.js` (ignored
+`mobile/android/app/src/main/assets/public/` -- Capacitor's `cap sync android` copies the built
+minified web bundle there on every local build; it's gitignored and never committed, but a bare
+`eslint .` still walked it and choked on a 260KB minified file, pre-existing noise unrelated to
+this task's changes, not caused by it).
+
+**Required Gradle build -- run for real, closes the plan's "debug APK assembles" acceptance
+criterion** (was NOT verified by any prior worker or the orchestrator):
+```
+corepack pnpm --filter @abs/mobile build && corepack pnpm --filter @abs/mobile exec cap sync android
+JAVA_HOME=C:\Users\scott\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2 \
+  ./mobile/android/gradlew.bat -p mobile/android testDebugUnitTest assembleDebug
+```
+`BUILD SUCCESSFUL in 19s` (129 actionable tasks, 76 executed / 53 up-to-date;
+`testDebugUnitTest` was `UP-TO-DATE` -- no Kotlin test sources changed this task, expected).
+Produced `mobile/android/app/build/outputs/apk/debug/app-debug.apk` (5,024,685 bytes),
+timestamped this run.
+
+**e2e Playwright spec -- infra complete, NOT yet green; flagged as a GAP, not silently
+carried.** The fake-server/config/spec trio is written, Chromium installs and launches, the
+Vite dev server + fake server both start correctly under `playwright.config.ts`'s `webServer`
+(fixed two real issues along the way: `pnpm exec vite` failing because bare `pnpm` isn't on
+PATH -- call `vite` directly, since `playwright test` already runs inside a package-manager
+script context with `node_modules/.bin` on PATH; and Vite's default `--host localhost`
+resolving to an IPv6-only bind that `127.0.0.1` `baseURL` couldn't reach -- pinned
+`--host 127.0.0.1` explicitly). Login itself still fails in the running spec (`LoginPage`
+renders "Could not sign in. Check your server address and credentials." after clicking
+Sign in) with **zero network requests observed to the fake server** (confirmed via temporary
+`page.on('request'/'response'/'requestfailed'/'pageerror')` listeners -- no request to
+`127.0.0.1:4545` at all, not even a failed/blocked one, and no `pageerror`), meaning
+`SessionStore.login()` throws synchronously before ever calling `fetch`. Added CORS headers
+(`access-control-allow-*` + `OPTIONS` preflight handling) to `fakeAbsServer.mjs` since the
+mobile app calls it cross-origin from Vite's dev port -- confirmed via manual `curl` (including
+a simulated preflight) that the server itself answers correctly outside the browser, so the
+bug is client-side, not server-side. Root cause not yet isolated. Next debugging step: add a
+`try/catch` around `normalizeServerUrl`/the `fetch` call in `session.login()` with a
+`console.error` of the caught error (or step through with `page.pause()` /
+`PWDEBUG=1 corepack pnpm --filter @abs/mobile e2e`) to see what actually throws before `fetch`
+is reached.
+
+Per-task status update (commits on `feature/mobile-acquisition-stack`, all local, none pushed):
+- Task 5 (Discover + acquisition queue) -- DONE, verified (tests/typecheck/lint all green).
+- Task 6 (CI, README, e2e infra, required Gradle assembleDebug) -- DONE except the e2e spec is
+  not yet passing end-to-end (see above); everything else in Task 6 is complete and verified.
+
 ## t600: Android vertical slice (Plan 5) -- IN PROGRESS, Tasks 1-4/6 done, Task 5-6 not started
 
 New `mobile/` pnpm workspace package (`@abs/mobile`; `pnpm-workspace.yaml` already listed

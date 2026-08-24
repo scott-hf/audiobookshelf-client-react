@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -b --noEmit",
-    "cap:sync": "cap sync android"
+    "cap:sync": "cap sync android",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@abs/acquisition-client": "workspace:*",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",
+    "@playwright/test": "^1.49.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",

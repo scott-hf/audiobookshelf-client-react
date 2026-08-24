@@ -9,6 +9,10 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./src/test/setup.ts']
+    setupFiles: ['./src/test/setup.ts'],
+    // e2e/ holds Playwright specs (playwright.config.ts, its own runner/assertions) -- vitest's
+    // default include glob would otherwise also pick up *.spec.ts there and fail immediately
+    // (no jsdom `page`, wrong `test`/`expect` globals).
+    exclude: ['**/node_modules/**', 'e2e/**']
   }
 })
