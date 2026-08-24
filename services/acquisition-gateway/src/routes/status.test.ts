@@ -12,7 +12,10 @@ function fakeFetcher(user: { id: string; isActive: boolean; librariesAccessible?
     if (url.endsWith('/api/me')) {
       return new Response(JSON.stringify(user), { status: 200, headers: { 'content-type': 'application/json' } })
     }
-    // Librarr reachability probe.
+    // Librarr reachability probe (GET /api/health).
+    if (url.endsWith('/api/health')) {
+      return new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
     return new Response(null, { status: 200 })
   }) as typeof fetch
 }
@@ -86,6 +89,9 @@ describe('GET /acquisition-api/v1/status', () => {
             status: 200,
             headers: { 'content-type': 'application/json' }
           })
+        }
+        if (url.endsWith('/api/health')) {
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'content-type': 'application/json' } })
         }
         return new Response(null, { status: 200 })
       }) as typeof fetch,

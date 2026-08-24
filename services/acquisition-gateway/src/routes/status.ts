@@ -12,15 +12,20 @@ export interface StatusResponse {
 }
 
 /**
- * Best-effort Librarr liveness probe. The exact health route is confirmed against
- * live Librarr source in the "Librarr acquisition flow" plan; here any response that
- * completes (even a 404) counts as "reachable" since the goal is distinguishing a
- * running service from a network failure/timeout, not validating a specific route.
+ * Real Librarr liveness probe: GET /api/health (work/librarr @ 1b86eb1,
+ * internal/api/health.go:29-63), which returns {"status":"ok",...} with an x-api-key auth
+ * header like every other Librarr route (internal/api/middleware.go:108-113). Replaces the
+ * earlier "any response < 500" placeholder (WI-1496 t200 HANDOFF follow-up).
  */
-export async function checkLibrarrReachable(librarrUrl: string, fetcher: typeof fetch): Promise<boolean> {
+export async function checkLibrarrReachable(librarrUrl: string, apiKey: string, fetcher: typeof fetch): Promise<boolean> {
   try {
-    const response = await fetcher(librarrUrl, { signal: AbortSignal.timeout(2000) })
-    return response.status < 500
+    const response = await fetcher(`${librarrUrl.replace(/\/$/, '')}/api/health`, {
+      headers: { 'x-api-key': apiKey },
+      signal: AbortSignal.timeout(2000)
+    })
+    if (!response.ok) return false
+    const body = (await response.json()) as { status?: string }
+    return body.status === 'ok'
   } catch {
     return false
   }
@@ -41,7 +46,7 @@ export function registerStatusRoute(app: FastifyInstance, config: GatewayConfig,
       instance.get('/status', async (request): Promise<StatusResponse> => {
         const user = request.absUser as AbsUser
         const [librarrOk, stagingOk] = await Promise.all([
-          checkLibrarrReachable(config.LIBRARR_INTERNAL_URL, fetcher),
+          checkLibrarrReachable(config.LIBRARR_INTERNAL_URL, config.LIBRARR_API_KEY, fetcher),
           Promise.resolve(checkStagingReady(config.stagingRoot))
         ])
         return {

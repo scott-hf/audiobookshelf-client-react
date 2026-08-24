@@ -1,0 +1,39 @@
+{
+  "results": [
+    {
+      "source": "prowlarr_audiobook",
+      "title": "Project Hail Mary",
+      "author": "Andy Weir",
+      "size": 742000000,
+      "seeders": 21,
+      "format": "m4b",
+      "media_type": "audiobook",
+      "info_hash": "0123456789abcdef0123456789abcdef01234567",
+      "magnet_url": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+      "in_library": false
+    },
+    {
+      "source": "audiobook",
+      "title": "Project Hail Mary",
+      "indexer": "AudioBookBay",
+      "size_human": "?",
+      "media_type": "audiobook",
+      "abb_url": "/audio-books/project-hail-mary-by-andy-weir/",
+      "in_library": false
+    },
+    {
+      "source": "prowlarr_audiobook",
+      "title": "Project Hail Mary",
+      "author": "Andy Weir",
+      "size": 1200000000,
+      "format": "mp3",
+      "media_type": "audiobook",
+      "download_protocol": "nzb",
+      "guid": "nzb-release-2",
+      "download_url": "https://indexer.test/get/2.nzb",
+      "in_library": false
+    }
+  ],
+  "search_time_ms": 42,
+  "sources": []
+}
