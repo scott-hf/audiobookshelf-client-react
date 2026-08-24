@@ -37,7 +37,13 @@ export function createMobileAcquisitionClient(session: SessionStore, fetcher?: t
   const baseClient = createAcquisitionClient({
     baseUrl: `${serverUrl}/acquisition-api/v1`,
     getAccessToken: async () => session.getAccessToken(),
-    fetcher
+    fetcher,
+    // ShelfDroid is a pure bearer-token client calling the gateway cross-origin (a real
+    // ABS host, not a same-origin Next proxy) -- 'include' would require the gateway to
+    // echo Access-Control-Allow-Credentials for an exact origin, which it has no reason to
+    // do for a bearer-only caller; the browser CORS-rejects the response otherwise. See
+    // AcquisitionClientOptions.credentials in @abs/acquisition-client.
+    credentials: 'omit'
   })
   return {
     status: withSessionRefreshRetry(session, baseClient.status),

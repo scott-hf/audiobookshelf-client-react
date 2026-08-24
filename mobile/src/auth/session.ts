@@ -68,7 +68,16 @@ export class SessionStore {
   private readonly listeners = new Set<SessionListener>()
 
   constructor(deps: SessionDeps) {
-    this.fetcher = deps.fetcher ?? fetch
+    // Must be bound to globalThis, not stored as a bare reference: fetch is a native
+    // WebIDL global-scope-mixin operation, and calling it later as `this.fetcher(...)`
+    // (a method-call, receiver = this SessionStore instance) throws
+    // "TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation" in real
+    // browsers -- the brand check only tolerates a null/undefined receiver (a bare
+    // detached call), not an arbitrary unrelated object. This threw synchronously
+    // before any request was ever sent, which is exactly why the Playwright e2e login
+    // step saw zero network activity: vitest unit tests never caught it because they
+    // always inject a mocked `fetcher`, never exercising the `?? fetch` default.
+    this.fetcher = deps.fetcher ?? fetch.bind(globalThis)
     this.vault = deps.vault
   }
 

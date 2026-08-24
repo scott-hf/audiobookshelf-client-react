@@ -22,6 +22,14 @@ export interface AcquisitionClientOptions {
   baseUrl: string
   getAccessToken?: () => Promise<string | null>
   fetcher?: typeof fetch
+  /** Default 'include' -- correct for the web app's same-origin `/acquisition-api/v1` proxy
+   * (needs the ABS session cookie forwarded). A pure bearer-token caller calling the gateway
+   * cross-origin (e.g. mobile ShelfDroid) must override this to 'omit': a cross-origin request
+   * with credentials 'include' requires the server to echo back a non-wildcard
+   * Access-Control-Allow-Origin plus Access-Control-Allow-Credentials, which a bearer-only
+   * backend has no reason to set -- the browser silently rejects the response as a CORS
+   * failure and fetch rejects with a generic TypeError, not a 401/AcquisitionApiError. */
+  credentials?: RequestCredentials
 }
 
 export function createAcquisitionClient(options: AcquisitionClientOptions) {
@@ -31,7 +39,7 @@ export function createAcquisitionClient(options: AcquisitionClientOptions) {
     headers.set('accept', 'application/json')
     const token = await options.getAccessToken?.()
     if (token) headers.set('authorization', `Bearer ${token}`)
-    const response = await fetcher(`${options.baseUrl}${path}`, { ...init, headers, credentials: 'include' })
+    const response = await fetcher(`${options.baseUrl}${path}`, { ...init, headers, credentials: options.credentials ?? 'include' })
     const body = await response.json()
     if (!response.ok) {
       throw new AcquisitionApiError(response.status, body.code ?? 'gateway_error', body.message ?? 'Gateway request failed')

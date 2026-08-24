@@ -28,8 +28,15 @@ test('login, browse, stream, discover, acquire, and see the queue update', async
   await page.getByRole('link', { name: 'Play' }).click()
   await expect(page.locator('.player-status')).toHaveText('playing', { timeout: 10_000 })
 
-  // Discover -> acquire.
-  await page.goto('/library/lib1/discover')
+  // Discover -> acquire. Navigate via in-app history (page.goBack()) + the Discover nav
+  // link, NOT page.goto() -- this SPA's session lives only in React memory in a plain
+  // browser (secureVault's native bridge is Android-only; see native/secureSession.ts),
+  // so a full page.goto() navigation reloads the app, drops the session, and bounces back
+  // to the login screen, exactly what made this step hang waiting for a search field that
+  // was never rendered.
+  await page.goBack() // book details -> library item details page back to library list
+  await page.goBack() // -> library page
+  await page.getByRole('link', { name: 'Discover' }).click()
   await page.getByLabel('Search audiobooks').fill('Project Hail Mary')
   await page.getByRole('button', { name: 'Search' }).click()
   await expect(page.getByTestId('release-card')).toBeVisible()

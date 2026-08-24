@@ -617,6 +617,69 @@ Per-task status update (commits on `feature/mobile-acquisition-stack`, all local
 - Task 6 (CI, README, e2e infra, required Gradle assembleDebug) -- DONE except the e2e spec is
   not yet passing end-to-end (see above); everything else in Task 6 is complete and verified.
 
+## t600 continuation (wi1496-worker-10, 2026-08-24): e2e login failure root-caused and fixed -- Gate 5 (t600) closed
+
+Picked up wi1496-worker-9's one open item: the Playwright vertical-slice spec's login step threw
+before any `fetch` call ever reached the network. Root-caused and fixed **three** real, distinct
+bugs found in sequence -- fixing each one advanced the spec to the next failure, until the whole
+journey (login -> browse -> item details -> stream -> Discover search -> acquire -> queue state)
+passed green end-to-end.
+
+**Bug 1 -- `this.fetcher(...)` illegal invocation (`mobile/src/auth/session.ts`).**
+`SessionStore`'s constructor stored the bare native `fetch` reference as an instance property
+(`this.fetcher = deps.fetcher ?? fetch`), then called it later as `this.fetcher(...)`. Native
+`fetch` is a WebIDL global-scope-mixin operation: calling it with `this` bound to an arbitrary
+non-null object (here, the `SessionStore` instance, via method-call syntax) fails its receiver
+brand check and throws `TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation`
+*synchronously, before any request is sent* -- exactly matching the observed symptom (zero
+network activity, generic caught error). `absClient.ts` and `acquisitionClient.ts`/
+`packages/acquisition-client` were NOT affected -- they store `fetcher` as a local `const` and
+call it as a bare (unbound) reference, which native `fetch` tolerates. vitest unit tests never
+caught this because every test injects a mocked `fetcher`, never exercising the `?? fetch`
+default. Fix: `this.fetcher = deps.fetcher ?? fetch.bind(globalThis)`.
+
+**Bug 2 -- e2e spec used `page.goto()` for in-app navigation.** After the login fix, the spec
+still failed at the Discover step: it used `page.goto('/library/lib1/discover')`, a full browser
+navigation. ShelfDroid's session lives only in React memory in a plain browser (`secureVault`'s
+native bridge, `mobile/src/native/secureSession.ts`, is Android-only and silently no-ops
+everywhere else by design) -- a full page reload drops the session and bounces the SPA back to
+the login screen, which is what the test then hung waiting on (a search field that was never
+rendered). Fixed the spec to navigate via `page.goBack()` (twice, back to the library page,
+preserving in-app history/session) then click the real `Discover` nav `<Link>`, matching how a
+real user (or the packaged Capacitor WebView) would navigate.
+
+**Bug 3 -- `credentials: 'include'` on a cross-origin bearer-only client
+(`packages/acquisition-client/src/index.ts`).** After the navigation fix, Discover search failed
+with a generic "Something went wrong" (not an `AcquisitionApiError` -- a raw CORS-rejected
+`fetch` `TypeError`). The shared `@abs/acquisition-client` package hardcoded
+`credentials: 'include'` on every request, correct for the web app (same-origin `/acquisition-api/v1`
+Next.js proxy, needs the ABS session cookie forwarded) but wrong for ShelfDroid: a cross-origin
+request with `credentials: 'include'` requires the server to answer with a non-wildcard
+`Access-Control-Allow-Origin` plus `Access-Control-Allow-Credentials: true`, which the bearer-only
+gateway has no reason to set -- the browser silently CORS-rejects the response and `fetch` rejects
+with a generic `TypeError`, never a 401/`AcquisitionApiError`. Fix: added an optional
+`credentials?: RequestCredentials` to `AcquisitionClientOptions` (default `'include'`, preserving
+the web app's existing behavior and its existing unit test's assertion), and mobile's
+`createMobileAcquisitionClient` now passes `credentials: 'omit'` explicitly, matching
+`absClient.ts`'s existing bearer-only (no-cookie) pattern.
+
+**Verification, all fresh this task:**
+- `corepack pnpm --filter @abs/mobile exec playwright test e2e/vertical-slice.spec.ts` -- **1
+  passed** (full vertical slice: login, browse, item details, stream, Discover search, acquire,
+  queue-state visible).
+- `corepack pnpm --filter @abs/mobile test` -- 8 files / 26 tests passing (unchanged).
+- `corepack pnpm --filter @abs/acquisition-client test` -- 1/1 passing (existing
+  `credentials: 'include'` assertion still holds -- the option's default is unchanged).
+- `corepack pnpm --filter @abs/mobile typecheck` -- clean.
+- `corepack pnpm exec eslint mobile/src packages/acquisition-client/src` -- clean.
+- `corepack pnpm find-hardcoded-strings` (root) -- 0 findings (settled noise, see t500 notes;
+  not a scope gap).
+- `mobile/test-results/` and `mobile/playwright-report/` removed before finishing (gitignored,
+  never committed).
+
+**t600 status: all 6 plan tasks now DONE.** Gate 5 (Android vertical slice) acceptance criterion
+-- the literal e2e journey -- passes for real, not hollow-skipped.
+
 ## t600: Android vertical slice (Plan 5) -- IN PROGRESS, Tasks 1-4/6 done, Task 5-6 not started
 
 New `mobile/` pnpm workspace package (`@abs/mobile`; `pnpm-workspace.yaml` already listed
