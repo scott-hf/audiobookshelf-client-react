@@ -3,14 +3,16 @@ import { type AbsClient, createAbsClient } from '../api/absClient'
 import { secureVault } from '../native/secureSession'
 import { SessionState, SessionStore } from './session'
 
-interface AuthContextValue {
+export interface AuthContextValue {
   state: SessionState
   client: AbsClient
   login: (serverUrl: string, username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null)
+/** Exported so tests can render routes with `<AuthContext.Provider value={...}>` instead of
+ * standing up the real Capacitor-backed AuthProvider. */
+export const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const session = useMemo(() => new SessionStore({ vault: secureVault }), [])

@@ -1,3 +1,4 @@
+import type { GetLibraryItemsResponse, AbsLibrary, AbsLibraryItem, AbsPlaybackSession, GetLibrariesResponse } from '../types/abs'
 import type { SessionStore } from '../auth/session'
 
 export class AbsApiError extends Error {
@@ -14,14 +15,14 @@ export interface AbsClientDeps {
   fetcher?: typeof fetch
 }
 
-export interface AbsLibrary {
-  id: string
-  name: string
-  mediaType: 'book' | 'podcast'
-}
+export type { AbsLibrary, GetLibrariesResponse }
 
-export interface GetLibrariesResponse {
-  libraries: AbsLibrary[]
+export interface StartSessionOptions {
+  deviceInfo: { clientName: string; deviceId: string }
+  supportedMimeTypes: string[]
+  mediaPlayer: string
+  forceTranscode: boolean
+  forceDirectPlay: boolean
 }
 
 /**
@@ -62,6 +63,32 @@ export function createAbsClient(deps: AbsClientDeps) {
 
   return {
     getLibraries: () => request<GetLibrariesResponse>('/api/libraries'),
+
+    getLibraryItems: (libraryId: string, page = 0) =>
+      request<GetLibraryItemsResponse>(`/api/libraries/${encodeURIComponent(libraryId)}/items?limit=30&page=${page}&sort=media.metadata.title`),
+
+    getLibraryItem: (itemId: string) => request<AbsLibraryItem>(`/api/items/${encodeURIComponent(itemId)}?expanded=1&include=progress`),
+
+    startSession: (itemId: string, options: StartSessionOptions) =>
+      request<AbsPlaybackSession>(`/api/items/${encodeURIComponent(itemId)}/play`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(options)
+      }),
+
+    syncSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
+      request<void>(`/api/session/${encodeURIComponent(sessionId)}/sync`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      }),
+
+    closeSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
+      request<void>(`/api/session/${encodeURIComponent(sessionId)}/close`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      }),
 
     /** Appends the current access token as a query param for elements the WebView loads
      * directly (audio/cover <img>/<audio> src) rather than through fetch. */
