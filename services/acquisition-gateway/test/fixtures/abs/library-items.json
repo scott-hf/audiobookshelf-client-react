@@ -1,0 +1,78 @@
+{
+  "results": [
+    {
+      "id": "li_exact",
+      "ino": "652127",
+      "libraryId": "lib-test",
+      "folderId": "fol_test",
+      "path": "/library/Andy Weir/Project Hail Mary",
+      "relPath": "Andy Weir/Project Hail Mary",
+      "isFile": false,
+      "mtimeMs": 1700000000000,
+      "ctimeMs": 1700000000000,
+      "birthtimeMs": 1700000000000,
+      "addedAt": 1700000100000,
+      "updatedAt": 1700000100000,
+      "isMissing": false,
+      "isInvalid": false,
+      "mediaType": "book",
+      "media": {
+        "id": "bk_exact",
+        "metadata": {
+          "title": "Project Hail Mary",
+          "titleIgnorePrefix": "Project Hail Mary",
+          "subtitle": null,
+          "authorName": "Andy Weir",
+          "authorNameLF": "Weir, Andy",
+          "narratorName": "Ray Porter",
+          "seriesName": "",
+          "genres": ["Science Fiction"],
+          "publishedYear": "2021",
+          "publisher": "Audible Studios",
+          "isbn": null,
+          "asin": "B08G9PRS1K",
+          "language": "English",
+          "explicit": false,
+          "abridged": false
+        },
+        "coverPath": "/metadata/items/li_exact/cover.jpg",
+        "tags": [],
+        "numTracks": 1,
+        "numAudioFiles": 1,
+        "numChapters": 32,
+        "duration": 58320,
+        "size": 471859200
+      },
+      "numFiles": 2,
+      "size": 471859200
+    },
+    {
+      "id": "li_other",
+      "libraryId": "lib-test",
+      "path": "/library/Andy Weir/Artemis",
+      "relPath": "Andy Weir/Artemis",
+      "addedAt": 1600000000000,
+      "updatedAt": 1600000000000,
+      "mediaType": "book",
+      "media": {
+        "id": "bk_other",
+        "metadata": {
+          "title": "Artemis",
+          "authorName": "Andy Weir",
+          "isbn": null,
+          "asin": "B072RXR22Q"
+        }
+      }
+    }
+  ],
+  "total": 2,
+  "limit": 100,
+  "page": 0,
+  "sortBy": null,
+  "sortDesc": false,
+  "filterBy": null,
+  "mediaType": "book",
+  "minified": true,
+  "collapseseries": false,
+  "include": ""
+}
