@@ -28,6 +28,12 @@ importers:
 
   .:
     dependencies:
+      '@abs/acquisition-client':
+        specifier: workspace:*
+        version: link:packages/acquisition-client
+      '@abs/acquisition-contract':
+        specifier: workspace:*
+        version: link:packages/acquisition-contract
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)

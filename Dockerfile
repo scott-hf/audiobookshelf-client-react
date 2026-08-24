@@ -14,7 +14,8 @@ RUN corepack enable pnpm
 
 WORKDIR /client-react
 
-COPY --from=abs-client package.json pnpm-lock.yaml .npmrc ./
+COPY --from=abs-client package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY --from=abs-client packages ./packages
 COPY --from=abs-client scripts ./scripts
 
 RUN pnpm install --frozen-lockfile

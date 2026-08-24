@@ -40,7 +40,9 @@ const withNextIntl = createNextIntlPlugin('./src/lib/i18n.ts')
 const nextConfig: NextConfig = {
   devIndicators: false,
   allowedDevOrigins: allowedDevOriginsFromEnv(),
-  transpilePackages: ['foliate-js', 'node-unrar-js'],
+  // @abs/acquisition-client ships raw TS (no build step, see packages/acquisition-client/package.json);
+  // @abs/acquisition-contract ships compiled dist/ + .d.ts so it does not need transpiling.
+  transpilePackages: ['foliate-js', 'node-unrar-js', '@abs/acquisition-client'],
   experimental: {
     serverActions: {
       bodySizeLimit: '10mb'
