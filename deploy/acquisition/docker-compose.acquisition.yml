@@ -1,0 +1,22 @@
+# Target-state deployment template (docs/handoff/05-DEPLOYMENT-CONTRACT.md). Copy
+# acquisition-gateway.env.example -> acquisition-gateway.env (mode 0600, real secrets,
+# never commit that copy) and compose.env.example -> compose.env (non-secret, never
+# commit that copy either), fill in real values, then validate with:
+#   docker compose --env-file compose.env -f docker-compose.acquisition.yml config
+# Do not commit a filled-in compose.env or acquisition-gateway.env.
+services:
+  acquisition-gateway:
+    image: ${GATEWAY_IMAGE:?set GATEWAY_IMAGE in compose.env}
+    env_file:
+      - ${GATEWAY_ENV_FILE:?set GATEWAY_ENV_FILE in compose.env}
+    volumes:
+      - gateway-data:/data
+      - audiobook-media:/media
+    # Gateway port is internal-only (02-SETTLED-DECISIONS.md); the reverse proxy
+    # forwards /acquisition-api/ to this service without stripping the prefix. Do not
+    # publish 8080 to the host.
+
+volumes:
+  gateway-data:
+  audiobook-media:
+    external: true

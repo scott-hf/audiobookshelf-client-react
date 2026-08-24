@@ -804,3 +804,99 @@ Gate 2 (Librarr acquisition flow) is implemented and all tests pass (see Gate 2 
 5. `feat: expose acquisition queue lifecycle` -- `src/events/`, `src/routes/events.ts`, `acquisitionService.retry()`/`cancel()`, `routes/acquisitions.ts` retry/cancel routes, contract's `AcquisitionEvent`, client's remaining methods.
 
 These boundaries overlap in a few files (`app.ts`, `acquisitions.ts`, contract's `index.ts`, `acquisitionRepository.ts`) since they were written together for a working end state -- splitting the diff by hunk across commits 2-5 is acceptable if exact per-file boundaries aren't practical; do not spend excess effort forcing a clean split. Re-run `corepack pnpm --filter @abs/acquisition-gateway test` (62/62 expected), `corepack pnpm -r --if-present typecheck`, and `corepack pnpm lint` after committing to confirm nothing was lost in the split, then proceed to Plan 3 in the runbook sequence.
+
+## t1000: Rollout prep -- template validation + cutover runbook
+
+Documentation/validation-only task, no application code. t600 (Android vertical slice) was
+already fully done ahead of this dispatch (commits `12f1b370`..`f209471d`).
+
+### Part 1: deploy template validation and naming reconciliation
+
+The repo's actual deployment templates (`deploy/acquisition/docker-compose.example.yml`,
+inline placeholders, no separate env file) did not match `docs/handoff/05-DEPLOYMENT-CONTRACT.md`'s
+described structure (`acquisition-gateway.env.example`, `compose.env.example`,
+`docker-compose.acquisition.yml`, validated via `docker compose --env-file compose.env -f
+docker-compose.acquisition.yml config`). Per the contract's own line 3 ("Claude should make
+the generated repository files agree with them"), converged the repo onto the contract's
+structure rather than the reverse:
+
+- `git mv deploy/acquisition/docker-compose.example.yml deploy/acquisition/docker-compose.acquisition.yml`,
+  rewritten to source the gateway's image and env file via `${GATEWAY_IMAGE}`/`${GATEWAY_ENV_FILE}`
+  (from `compose.env`) and an `env_file:` directive (the secret `acquisition-gateway.env`).
+- New `deploy/acquisition/compose.env.example` -- non-secret Compose interpolation values
+  (`GATEWAY_IMAGE`, `GATEWAY_ENV_FILE`).
+- New `deploy/acquisition/acquisition-gateway.env.example` -- the full secret gateway runtime
+  env, mode-0600 when copied for real use.
+- `docker-compose.test.yml` (Gate 3's disposable e2e compose) was not touched -- it never
+  referenced the renamed file, no relative paths broke.
+- Added `deploy/acquisition/compose.env` and `deploy/acquisition/acquisition-gateway.env` to
+  `.gitignore` (the real, filled-in copies a deployer would create from the `.example` files).
+
+**Validation (literal contract command, run against temporary copies of the `.example`
+placeholder files, deleted immediately after, never committed):**
+
+```
+$ docker compose --env-file compose.env -f docker-compose.acquisition.yml config
+```
+
+Exit 0. Output pasted in full in `docs/handoff/cutover-runbook.md` section 6 (reference block)
+-- reviewed line by line, only placeholder values resolved (`replace-with-*`,
+`audiobookshelf`/`librarr` service-name hostnames, `ghcr.io/REPLACE-WITH-OWNER/...`), nothing
+resembling a real hostname, token, or filesystem path.
+
+**Contract-vs-parser drift (reported, not blocking):** cross-checked the contract's full
+16-variable table against the actual parser (`services/acquisition-gateway/src/config.ts`,
+zod schema). Real drift found:
+- Documented but NOT read by the parser: `PUBLIC_BASE_PATH`, `AUTH_CACHE_SECONDS`,
+  `ABS_RESOLUTION_TIMEOUT_SECONDS`, `LOG_LEVEL`.
+- Documented under a different name AND unit than the real variable: contract's
+  `RECONCILE_INTERVAL_SECONDS`/`HISTORY_RETENTION_DAYS` are actually
+  `RECONCILE_INTERVAL_MS`/`HISTORY_RETENTION_SECONDS` in `config.ts`.
+- Read by the parser but NOT documented in the contract at all: `STALL_TIMEOUT_SECONDS`
+  (FND-00410's stall-to-failed timeout), `FINAL_TREE_MODE`, `FINAL_TREE_FILE_MODE`,
+  `FINAL_TREE_DIR_MODE`, `IMPORT_CLEANUP_ENABLED`.
+`acquisition-gateway.env.example` uses the real `config.ts` names (documented as such inline)
+since those are what actually gets parsed; the contract doc itself was left as-is (out of
+scope to edit per this task, but the drift is now recorded here and in the env file's own
+comments so a future reader isn't misled by the contract's table).
+
+No nginx template file was added to the repo -- the contract describes reverse-proxy
+requirements, not a mandated file, and the droplet's real nginx config is out of scope/
+inaccessible. An illustrative snippet lives inside `docs/handoff/cutover-runbook.md` section 2
+instead, clearly marked as non-deployable reference only.
+
+### Part 2: cutover runbook
+
+Wrote `docs/handoff/cutover-runbook.md`: current droplet state (WI-1486 direct-import stack,
+DEC-2717 cited), target state (staging + gateway, DEC-2718 cited), pre-cutover blockers
+(FND-00442 re-checked open via `hf-wi finding get FND-00442` and written up as a hard blocker;
+FND-00414 accounted for with an explicit Librarr-DB-row-clearing step; disposable-library
+import-and-restart journey spelled out as 5 concrete checks; SQLite online-backup command),
+10 ordered cutover steps each with its own verification, and rollback exactly per
+`05-DEPLOYMENT-CONTRACT.md`'s Backup and rollback section (proxy-disable + gateway-stop only,
+never delete data, never auto-reverse-move, cleanup only via the gateway's own
+`lastSuccessfulStage`-keyed resume logic -- noted that no standalone CLI cleanup command
+exists in the repo today, so rollback text names the actual mechanism
+(`importCoordinator.ts` resume-on-restart / the `retry` route) instead of inventing one.
+Section 6 embeds the Part-1 validation command and its output as a "known-good" reference
+block per the task's request.
+
+The secrets file `G:\tools\ABS\wi-1496-secrets.env` is cited by path only (section 4, step 2)
+as where real credentials/SSH target live outside this repo; its contents were never read.
+
+### Out of scope, confirmed not touched
+
+No droplet SSH, no real Librarr/ABS instance, FND-00442 not resolved for real (only
+re-confirmed open and written up as a blocker), cutover itself not executed.
+
+### Gaps
+
+- `docker compose config`'s built-in `${VAR:?...}` failure mode (missing required var) was
+  not separately exercised -- only the success path (all vars present) was validated this
+  task.
+- The disposable-library import-and-restart journey (runbook section 3c) describes what a
+  human must do on the real droplet; it was not run this task (no droplet access, explicitly
+  out of scope).
+- Did not verify whether `sqlite3` CLI is present inside the gateway's Alpine-based runtime
+  image (Dockerfile not re-inspected this task) -- the runbook's backup step names a fallback
+  (mount `/data` read-only from another container) for exactly this uncertainty.
