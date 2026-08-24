@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShelfDroid connects to a user-supplied, self-hosted Audiobookshelf server address (see
+  LoginPage.tsx / session.ts), which is commonly plain HTTP, especially on a home network
+  or a reverse proxy that has not been put behind TLS yet. Blocking cleartext by default (the
+  Capacitor template's usesCleartextTraffic="false") makes every such server unreachable with
+  no visible error beyond a failed fetch, which is what broke the real-device login smoke test
+  against http://tidesofeuropa.com:13378 during WI-1496 t650 (2026-08-24).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
