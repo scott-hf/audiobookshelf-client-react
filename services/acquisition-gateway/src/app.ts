@@ -53,6 +53,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     validate: (token) => validateAbsUser(token, options.config.ABS_INTERNAL_URL, fetcher)
   })
 
+  // Process/liveness only, per 05-DEPLOYMENT-CONTRACT.md: unauthenticated (registered outside
+  // AUTHENTICATED_PREFIX, so the onRequest hook below never touches it), no dependency/config
+  // details -- a Docker/orchestrator healthcheck target, not a readiness probe (that's the
+  // authenticated /acquisition-api/v1/status route's `ready` field).
+  app.get('/healthz', async () => ({ ok: true }))
+
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith(AUTHENTICATED_PREFIX)) return
     try {
