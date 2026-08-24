@@ -13,6 +13,7 @@ COPY services/acquisition-gateway ./services/acquisition-gateway
 # pnpm.onlyBuiltDependencies).
 RUN pnpm --filter @abs/acquisition-gateway... install --frozen-lockfile --ignore-scripts \
   && pnpm rebuild better-sqlite3 \
+  && pnpm --filter @abs/acquisition-contract build \
   && pnpm --filter @abs/acquisition-gateway build
 
 FROM node:22-alpine
@@ -26,6 +27,10 @@ COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/services/acquisition-gateway/dist ./services/acquisition-gateway/dist
 COPY --from=build /repo/services/acquisition-gateway/node_modules ./services/acquisition-gateway/node_modules
 COPY --from=build /repo/services/acquisition-gateway/package.json ./services/acquisition-gateway/package.json
+# The workspace symlink node_modules/@abs/acquisition-contract -> ../../packages/acquisition-contract
+# needs its target present too -- only its built dist/ + package.json, not source or tests.
+COPY --from=build /repo/packages/acquisition-contract/dist ./packages/acquisition-contract/dist
+COPY --from=build /repo/packages/acquisition-contract/package.json ./packages/acquisition-contract/package.json
 WORKDIR /repo/services/acquisition-gateway
 USER node
 CMD ["node", "dist/main.js"]

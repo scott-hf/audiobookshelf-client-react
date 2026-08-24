@@ -3,6 +3,9 @@
 # dependencies
 /node_modules
 node_modules/
+
+# workspace package build output (e.g. packages/acquisition-contract/dist)
+dist/
 /.pnp
 .pnp.*
 .yarn/*

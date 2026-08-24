@@ -26,6 +26,18 @@ CREATE TABLE acquisitions (
 );
 CREATE INDEX acquisitions_user_library_updated ON acquisitions(abs_user_id, abs_library_id, updated_at DESC);
 `.trim()
+  },
+  {
+    // WI-1496 t300: librarr_job_id -> tracking_key (generic "kind:value" correlation key,
+    // precedence hash > job_id > nzo_id > info_hash, never title -- correction #3) plus
+    // stalled_since for the reconciler's 0-byte stall policy (FND-00410). Kept in sync with
+    // ./migrations/001_initial.sql (appended there, not a separate 002 file, to match this
+    // array's single-file convention).
+    version: 2,
+    sql: `
+ALTER TABLE acquisitions RENAME COLUMN librarr_job_id TO tracking_key;
+ALTER TABLE acquisitions ADD COLUMN stalled_since TEXT;
+`.trim()
   }
 ]
 

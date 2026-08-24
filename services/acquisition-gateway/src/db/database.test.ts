@@ -54,14 +54,18 @@ describe('gateway database', () => {
       (row) => row.name
     )
     expect(tables).toEqual(expect.arrayContaining(['acquisitions', 'schema_migrations', 'search_sessions']))
-    expect(db.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }])
+    expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
+      1, 2
+    ])
   })
 
   it('is idempotent to reopen (migrations do not reapply)', () => {
     // openDatabase already ran once in beforeEach; running the migration logic again
     // against the same handle must not throw or duplicate the schema_migrations row.
     const db2 = openDatabase(':memory:')
-    expect(db2.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }])
+    expect((db2.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
+      1, 2
+    ])
     db2.close()
   })
 
@@ -91,7 +95,9 @@ describe('gateway database', () => {
       const reopened = openDatabase(dbPath)
       const record = new AcquisitionRepository(reopened).findById('a1')
       expect(record).toMatchObject({ id: 'a1', title: 'Book', state: 'queued' })
-      expect(reopened.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }])
+      expect((reopened.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
+        1, 2
+      ])
       reopened.close()
     } finally {
       rmSync(dir, { recursive: true, force: true })

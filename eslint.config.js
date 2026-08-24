@@ -11,6 +11,7 @@ module.exports = [
       'node_modules/',
       '.next/',
       'dist/',
+      '**/dist/',
       'build/',
       'out/',
       'coverage/',
