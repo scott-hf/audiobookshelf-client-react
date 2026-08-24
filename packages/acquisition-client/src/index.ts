@@ -1,3 +1,5 @@
+import type { Acquisition, CreateAcquisitionBody, SearchResponse } from '@abs/acquisition-contract'
+
 export class AcquisitionApiError extends Error {
   constructor(
     public status: number,
@@ -35,6 +37,18 @@ export function createAcquisitionClient(options: AcquisitionClientOptions) {
     return body as T
   }
   return {
-    status: () => request<AcquisitionStatusResponse>('/status')
+    status: () => request<AcquisitionStatusResponse>('/status'),
+    searchAudiobooks: (libraryId: string, q: string) =>
+      request<SearchResponse>(`/search/audiobooks?${new URLSearchParams({ libraryId, q })}`),
+    createAcquisition: (libraryId: string, body: CreateAcquisitionBody) =>
+      request<Acquisition>(`/acquisitions?${new URLSearchParams({ libraryId })}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      }),
+    listAcquisitions: (libraryId: string) => request<Acquisition[]>(`/acquisitions?${new URLSearchParams({ libraryId })}`),
+    getAcquisition: (acquisitionId: string) => request<Acquisition>(`/acquisitions/${acquisitionId}`),
+    retryAcquisition: (acquisitionId: string) => request<Acquisition>(`/acquisitions/${acquisitionId}/retry`, { method: 'POST' }),
+    cancelAcquisition: (acquisitionId: string) => request<Acquisition>(`/acquisitions/${acquisitionId}`, { method: 'DELETE' })
   }
 }
