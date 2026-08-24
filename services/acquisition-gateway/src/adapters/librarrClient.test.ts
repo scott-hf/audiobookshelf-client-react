@@ -26,10 +26,15 @@ describe('LibrarrClient', () => {
 
     expect(results).toHaveLength(3)
     expect(results[0].info_hash).toBe('0123456789abcdef0123456789abcdef01234567')
-    // AudioBookBay result carries only abb_url -- no info_hash/magnet at search time.
+    // AudioBookBay result carries only abb_url -- no info_hash/magnet at search time, and
+    // (WI-1496 t1050, confirmed live) no media_type either: internal/models/book.go's
+    // MediaType field is `json:"media_type,omitempty"` and AudioBookBay's own Search()
+    // never sets it, unlike other sources -- a schema that required the literal 'audiobook'
+    // here rejected every real AudioBookBay result.
     expect(results[1].abb_url).toBe('/audio-books/project-hail-mary-by-andy-weir/')
     expect(results[1].info_hash).toBeUndefined()
     expect(results[1].magnet_url).toBeUndefined()
+    expect(results[1].media_type).toBeUndefined()
     // NZB result is protocol-tagged.
     expect(results[2].download_protocol).toBe('nzb')
 

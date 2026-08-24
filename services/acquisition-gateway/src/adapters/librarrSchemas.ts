@@ -16,7 +16,16 @@ export const LibrarrSearchResultSchema = z
     size: z.number().int().nonnegative().optional(),
     seeders: z.number().int().optional(),
     format: z.string().optional(),
-    media_type: z.literal('audiobook'),
+    // internal/models/book.go:24 is `json:"media_type,omitempty"`, and AudioBookBay's own
+    // Search() (internal/search/audiobookbay.go) never sets it -- it signals "this is an
+    // audiobook result" via the separate `source: "audiobook"` field instead, leaving
+    // MediaType as Go's zero value and thus omitted entirely (confirmed live, WI-1496
+    // t1050: every real AudioBookBay row from GET /api/search/audiobooks has no media_type
+    // key at all). A required z.literal('audiobook') here rejected 100% of AudioBookBay
+    // results with "invalid_literal" and let only LibriVox's rows (which do set it) through.
+    // This is always the audiobook-only endpoint regardless, so don't gate on a field one
+    // source happens to omit -- and nothing downstream reads media_type anyway.
+    media_type: z.string().optional(),
     info_hash: z.string().optional(),
     magnet_url: z.string().optional(),
     download_url: z.string().optional(),
