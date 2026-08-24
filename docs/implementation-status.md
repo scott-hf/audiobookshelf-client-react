@@ -525,6 +525,120 @@ services/acquisition-gateway/src/config.ts.`, exit 0.
 Gate 4 is done. Next in the tracker sequence: t600 (Android vertical slice) and t1000
 (rollout prep), both already unblocked.
 
+## t600: Android vertical slice (Plan 5) -- IN PROGRESS, Tasks 1-4/6 done, Task 5-6 not started
+
+New `mobile/` pnpm workspace package (`@abs/mobile`; `pnpm-workspace.yaml` already listed
+`mobile` before this session started). Vite 5 + React 19 + React Router 7 + Capacitor 7,
+Vitest for unit tests (repo convention). Android project generated via `cap add android`
+and committed under `mobile/android/` (build outputs gitignored:
+`mobile/android/**/build/`, `.gradle/`, `local.properties`, `*.apk`/`*.aab`, `.cxx/`).
+
+**Deviation from the plan's task ordering**: the plan's Task 2 file map needs
+`mobile/android/app/src/main/java/.../MainActivity.kt`/`SecureSessionPlugin.kt` to exist,
+but the plan's own Task 6 Step 1 is what generates `mobile/android/` via `cap add android`.
+Ran `cap add android` right after Task 1 (before Task 2) instead of waiting for Task 6, so
+the native Kotlin plugin has somewhere to live. Task 6 remaining work is CI + physical-device
+smoke test + README, not project generation (already done).
+
+**JAVA_HOME resolution (record so it isn't re-discovered)**: Android Studio is NOT installed
+on this machine (only standalone SDK components at `%LOCALAPPDATA%\Android\Sdk`
+-- platform-tools/build-tools/platforms, no bundled `jbr`). Gradle had already
+auto-provisioned a JetBrains Runtime (JBR) 21 toolchain at
+`C:\Users\scott\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2` (functionally identical
+lineage to Android Studio's bundled jbr) -- used that as `JAVA_HOME` for all Gradle
+invocations. AGP 8.7.2 + Capacitor 7's `capacitor-android` module require JDK 21
+specifically (JDK 17, also present at `C:\Users\scott\AppData\Local\Temurin17\jdk-17.0.20+8`,
+fails with `invalid source release: 21` compiling `capacitor-android`). `sdk.dir` written to
+`mobile/android/local.properties` (gitignored, machine-local) pointing at
+`%LOCALAPPDATA%\Android\Sdk`. First Gradle run auto-installed missing SDK Build-Tools 34 and
+Platform 35 (compileSdk/targetSdk 35 per the plan) into that same SDK dir, accepting the
+license non-interactively via the Gradle plugin's own auto-download (no separate
+`sdkmanager --licenses` step was needed).
+
+**Trap: `unitTests.returnDefaultValues = true` breaks `JSObject`/`JSONObject` in Kotlin unit
+tests.** With that `testOptions` flag (needed so unrelated Android-stub calls don't throw),
+`com.getcapacitor.JSObject.put()`/`.getString()` silently returns null/no-ops instead of
+working, because Android's unit-test `android.jar` ships JSON classes that either throw
+`Stub!` or (with `returnDefaultValues`) return defaults -- NOT a real implementation. Fixed
+by adding `testImplementation "org.json:json:20240303"` (a real org.json jar) to
+`mobile/android/app/build.gradle`; this shadows the broken stub on the unit-test classpath.
+Cost ~3 debug iterations before isolating (confirmed via three throwaway inline tests
+proving `FakeSecureStore` and `Mockito` both worked fine and only raw
+`JSObject().put().getString()` was broken) -- if this resurfaces, check this dependency
+first before suspecting Mockito or Kotlin property semantics.
+
+Per-task status (commits on `feature/mobile-acquisition-stack`, all local, none pushed):
+- Task 1 (scaffold) -- DONE, commit `12f1b370`. `pnpm --filter @abs/mobile test`/`build` both
+  pass; `mobile/dist/index.html` exists with hashed local assets. Also fixed the same
+  root-postcss-walk-up issue `packages/acquisition-client` hit (`css: { postcss: { plugins:
+  [] } }` in both `vite.config.ts` and `vitest.config.ts`), and pinned `vite: ^5.4.11`
+  (not `^6`) because `vitest@2.1.x`'s `vitest/config` re-export requires vite 5's `Plugin`
+  type -- vite 6 + vitest 2 mismatched types broke `tsc -b` (`vite build` itself worked, only
+  the `vitest.config.ts` type-check failed) until pinned back to vite 5.
+- Task 2 (auth + secure storage) -- DONE, commit `cca0d7d7`. `SessionStore`/`createAbsClient` are DI factories (not
+  singletons) specifically so `session.test.ts` can inject a fake `SessionVault` + fetcher --
+  5 vitest cases (login+401-retry+refresh round trip, refresh failure surfaces original 401,
+  vault restore, logout clears vault, tokens never logged). Native side:
+  `SecureSessionPlugin.kt` (AndroidX Security `EncryptedSharedPreferences`, one JSON session
+  blob) with a `SecureStore` interface seam so `SecureSessionPluginTest.kt` (4 cases) never
+  touches the real Android Keystore. Added Kotlin support to the Capacitor-generated Gradle
+  project (it ships Java-only by default): `kotlin-android` plugin, `kotlin_version =
+  '2.0.21'`, `androidx.security:security-crypto:1.1.0-alpha06`. `minSdkVersion` bumped
+  23->26 per the packet; debug builds get `applicationIdSuffix ".debug"`; manifest adds
+  `POST_NOTIFICATIONS`, sets `usesCleartextTraffic="false"` with a debug-only manifest
+  override (`android:usesCleartextTraffic="true"`) for local/LAN http servers during
+  development.
+- Task 3 (browse libraries/details) -- DONE, commit `a7b0a4af`. `LibrariesPage` ->
+  `LibraryPage` -> `BookDetailsPage` navigation chain, `types/abs.ts` canonical ABS shapes
+  (`AbsLibrary`/`AbsLibraryItem`/etc, imported by `absClient.ts` rather than duplicated).
+  3 RTL tests in `LibraryPage.test.tsx` (book-only library filter, item click -> details
+  navigation + `getLibraryItem` call, empty-library state) using an exported `AuthContext`
+  (not just the `useAuth()` hook) so tests can inject a fake `AbsClient` without a real
+  `AuthProvider`/Capacitor plugin round trip.
+- Task 4 (stream + sync) -- DONE, commit `f66a60c9`. `HtmlAudioPlayer` takes an injectable
+  `createAudio()` (defaults to `new Audio()`) so `htmlAudioPlayer.test.ts` /
+  `progressSync.test.ts` (6 cases total) run against in-memory `AudioLike` fakes under
+  `vi.useFakeTimers()` instead of jsdom's unimplemented `HTMLMediaElement.play()`. 15s sync
+  interval, pause triggers an immediate sync + timer stop, seek does NOT sync, item
+  replacement closes the previous session first. `PlayerProvider` uses `@capacitor/app`'s
+  `appStateChange` listener to `close()` (not just pause) on app background per the spec.
+  `PlayerPage` wired at `/library/:libraryId/item/:itemId/play`.
+- Task 5 (Discover + acquisition queue) -- NOT STARTED. Reference material already read this
+  session (don't re-read, just port): `src/contexts/AcquisitionContext.tsx` (SSE +10s-poll-
+  fallback pattern, `ensureQueueLoaded`/`refreshQueue`/`applyAcquisition`),
+  `src/components/acquisition/ReleaseCard.tsx` and `AcquisitionRow.tsx` (already read in
+  full this session -- port the JSX/logic, drop `next-intl`/`Btn`/Tailwind, use plain
+  className CSS matching `mobile/src/styles.css`'s existing dark-theme variables). Web pages
+  NOT yet read this session: `src/app/(main)/library/[library]/discover/DiscoverClient.tsx`
+  and `.../acquisition-queue/AcquisitionQueueClient.tsx` -- read those next for the exact
+  confirm-dialog + UUID-idempotency-key + retry/cancel wiring before writing
+  `mobile/src/routes/DiscoverPage.tsx`/`AcquisitionQueuePage.tsx`. Mobile-specific: no cookie
+  session, so `acquisitionClient.ts` must build `createAcquisitionClient({ baseUrl:
+  \`${session.serverUrl}/acquisition-api/v1\`, getAccessToken: async () =>
+  session.accessToken })` from `@abs/acquisition-client` (already a `mobile/package.json`
+  dependency) -- bearer auth, not cookies. Key any per-release UI state by opaque
+  `releaseId`/`acquisition.id`, never normalized title (FND-00437 was exactly this bug in
+  the prior native app attempt). Add both routes to `App.tsx` and a bottom nav (styles
+  already scaffolded in `styles.css`'s `.app-bottom-nav`, just unused so far).
+- Task 6 (Android/CI/device smoke) -- PARTIALLY DONE ahead of schedule: `mobile/android/`
+  already generated and committed (see deviation note above), `compileSdk`/`targetSdk` 35
+  and `minSdk` 26 already set, manifest permissions/cleartext already set. Remaining:
+  `.github/workflows/android.yml` CI file, `mobile/e2e/vertical-slice.spec.ts` (plan says
+  Playwright in the tech stack line but gives no concrete spec -- decide Playwright vs a
+  simpler smoke script when picked back up), `mobile/README.md`, and the actual
+  `assembleDebug` Gradle build + APK path evidence (only `testDebugUnitTest` has been run
+  and verified green so far this session -- `assembleDebug` has NOT been run yet; expect it
+  to need a live network fetch of additional AGP/Gradle dependencies and will take several
+  minutes on first run).
+
+Exact resume commands (from `mobile/android/`, JAVA_HOME set as above):
+```
+$env:JAVA_HOME = "C:\Users\scott\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2"
+.\gradlew.bat -p . testDebugUnitTest assembleDebug
+```
+Then `corepack pnpm --filter @abs/mobile test`/`typecheck` and `corepack pnpm exec eslint
+mobile/src` before each commit (all green as of Task 4's commit).
+
 ### Historical (t300 — already done)
 
 Gate 2 (Librarr acquisition flow) is implemented and all tests pass (see Gate 2 section above), but **the working tree has NOT been committed yet** -- the worker that did this implementation hit its context-rotation threshold immediately after finishing verification. Next worker: review the uncommitted diff, then create the 5 per-task commits using the plan's own commit messages (task boundaries below), in order:
