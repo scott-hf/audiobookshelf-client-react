@@ -4,6 +4,8 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "test:workspace": "pnpm -r --if-present test",
+    "typecheck:workspace": "pnpm -r --if-present typecheck",
     "sync-pdfjs": "node scripts/sync-pdfjs-vendor.mjs",
     "sync-unrar": "node scripts/sync-unrar-wasm.mjs",
     "migrate-locales": "node scripts/migrate-locales-from-vue.mjs",
