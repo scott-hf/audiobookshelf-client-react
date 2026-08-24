@@ -1,20 +1,25 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import LoadingView from './components/LoadingView'
+import { PlayerProvider } from './player/PlayerProvider'
 import BookDetailsPage from './routes/BookDetailsPage'
 import LibrariesPage from './routes/LibrariesPage'
 import LibraryPage from './routes/LibraryPage'
 import LoginPage from './routes/LoginPage'
+import PlayerPage from './routes/PlayerPage'
 
 function AuthenticatedApp() {
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to="/libraries" replace />} />
-      <Route path="/libraries" element={<LibrariesPage />} />
-      <Route path="/library/:libraryId" element={<LibraryPage />} />
-      <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
-      <Route path="*" element={<Navigate to="/libraries" replace />} />
-    </Routes>
+    <PlayerProvider>
+      <Routes>
+        <Route path="/" element={<Navigate to="/libraries" replace />} />
+        <Route path="/libraries" element={<LibrariesPage />} />
+        <Route path="/library/:libraryId" element={<LibraryPage />} />
+        <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
+        <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
+        <Route path="*" element={<Navigate to="/libraries" replace />} />
+      </Routes>
+    </PlayerProvider>
   )
 }
 
