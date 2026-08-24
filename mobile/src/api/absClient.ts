@@ -1,0 +1,77 @@
+import type { SessionStore } from '../auth/session'
+
+export class AbsApiError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message)
+  }
+}
+
+export interface AbsClientDeps {
+  session: SessionStore
+  fetcher?: typeof fetch
+}
+
+export interface AbsLibrary {
+  id: string
+  name: string
+  mediaType: 'book' | 'podcast'
+}
+
+export interface GetLibrariesResponse {
+  libraries: AbsLibrary[]
+}
+
+/**
+ * Token-aware ABS API client. Every call attaches the current bearer access token; a 401
+ * triggers exactly one session refresh + retry (SessionStore.refresh), mirroring the web
+ * app's fetchBackendWithCookieRefresh behavior for a bearer-token (not cookie) client.
+ */
+export function createAbsClient(deps: AbsClientDeps) {
+  const fetcher = deps.fetcher ?? fetch
+  const session = deps.session
+
+  async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
+    const serverUrl = session.getServerUrl()
+    const accessToken = session.getAccessToken()
+    if (!serverUrl || !accessToken) {
+      throw new AbsApiError(401, 'Not authenticated')
+    }
+
+    const headers = new Headers(init.headers)
+    headers.set('authorization', `Bearer ${accessToken}`)
+
+    const response = await fetcher(`${serverUrl}${path}`, { ...init, headers })
+
+    if (response.status === 401 && !retried) {
+      const refreshed = await session.refresh()
+      if (refreshed) {
+        return request<T>(path, init, true)
+      }
+    }
+
+    if (!response.ok) {
+      const message = await response.text().catch(() => response.statusText)
+      throw new AbsApiError(response.status, message || response.statusText)
+    }
+
+    return (await response.json()) as T
+  }
+
+  return {
+    getLibraries: () => request<GetLibrariesResponse>('/api/libraries'),
+
+    /** Appends the current access token as a query param for elements the WebView loads
+     * directly (audio/cover <img>/<audio> src) rather than through fetch. */
+    authorizedStreamUrl: (contentUrl: string): string => {
+      const serverUrl = session.getServerUrl()
+      const accessToken = session.getAccessToken()
+      const separator = contentUrl.includes('?') ? '&' : '?'
+      return `${serverUrl ?? ''}${contentUrl}${separator}token=${encodeURIComponent(accessToken ?? '')}`
+    }
+  }
+}
+
+export type AbsClient = ReturnType<typeof createAbsClient>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only override: allow cleartext (http) traffic so local/LAN Audiobookshelf servers
+     are reachable during development. Release builds keep usesCleartextTraffic="false". -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application android:usesCleartextTraffic="true" tools:replace="android:usesCleartextTraffic" />
+</manifest>
