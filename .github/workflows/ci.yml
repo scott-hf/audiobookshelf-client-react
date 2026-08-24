@@ -39,3 +39,9 @@ jobs:
 
       - name: Find hardcoded strings
         run: pnpm find-hardcoded-strings
+
+      - name: Workspace tests
+        run: pnpm test:workspace
+
+      - name: Workspace typecheck
+        run: pnpm typecheck:workspace

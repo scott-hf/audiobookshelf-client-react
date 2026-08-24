@@ -1,0 +1,27 @@
+# Example deployment only -- copy to docker-compose.yml (or merge into an existing
+# compose file) and fill in real values. Do not commit a filled-in version with real
+# hostnames, tokens, or paths.
+services:
+  acquisition-gateway:
+    image: ghcr.io/REPLACE-WITH-OWNER/audiobookshelf-acquisition-gateway:latest
+    environment:
+      PORT: '8080'
+      ABS_INTERNAL_URL: http://audiobookshelf:13378
+      ABS_SERVICE_TOKEN: replace-with-abs-service-token
+      LIBRARR_INTERNAL_URL: http://librarr:5050
+      LIBRARR_API_KEY: replace-with-librarr-api-key
+      GATEWAY_DB_PATH: /data/gateway.sqlite
+      STAGING_ROOT: /media/staging
+      LIBRARY_MAPPINGS_JSON: '{"replace-with-abs-library-id":"/media/audiobooks"}'
+      SEARCH_TTL_SECONDS: '900'
+    volumes:
+      - gateway-data:/data
+      - audiobook-media:/media
+    # Gateway port is internal-only (02-SETTLED-DECISIONS.md); the reverse proxy
+    # forwards /acquisition-api/ to this service without stripping the prefix. Do not
+    # publish 8080 to the host.
+
+volumes:
+  gateway-data:
+  audiobook-media:
+    external: true

@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@abs/acquisition-contract": "workspace:*",
