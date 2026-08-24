@@ -30,14 +30,16 @@ export default function LibraryLayoutWrapper({ children }: LibraryLayoutWrapperP
   const isLibraryItemPage = pathname.includes('/item/')
   const isBatchEditPage = pathname.endsWith('/batch')
   const isStatsPage = pathname.endsWith('/stats')
-  const showToolbar = !isLibraryItemPage && !isBatchEditPage && !isStatsPage
+  const isAcquisitionPage = pathname.endsWith('/discover') || pathname.endsWith('/acquisition-queue')
+  const showToolbar = !isLibraryItemPage && !isBatchEditPage && !isStatsPage && !isAcquisitionPage
   const showCoverSizeWidget =
     !isLibraryItemPage &&
     !pathname.endsWith('/latest') &&
     !pathname.endsWith('/download-queue') &&
     !pathname.endsWith('/stats') &&
     !pathname.endsWith('/narrators') &&
-    !isBatchEditPage
+    !isBatchEditPage &&
+    !isAcquisitionPage
 
   useLibraryRouteGuard()
 

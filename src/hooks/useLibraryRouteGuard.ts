@@ -5,8 +5,8 @@ import type { Library } from '@/types/api'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useEffect } from 'react'
 
-export function isLibraryIssuesPage(pathname: string): boolean {
-  return pathname.endsWith('/issues')
+export function isLibraryIssuesPage(pathname: string | null | undefined): boolean {
+  return pathname?.endsWith('/issues') ?? false
 }
 
 const LIBRARY_SHARED_PAGES = ['items', 'issues', 'playlists', 'search', 'playlist', 'item', 'batch']

@@ -1,6 +1,7 @@
 'use client'
 
 import VersionFooter from '@/components/app/VersionFooter'
+import { useAcquisition } from '@/contexts/AcquisitionContext'
 import { useLibraryOptional } from '@/contexts/LibraryContext'
 import { useUser } from '@/contexts/UserContext'
 import { isLibraryIssuesPage } from '@/hooks/useLibraryRouteGuard'
@@ -32,6 +33,7 @@ export default function SideRailContent({
   const pathname = usePathname()
   const t = useTypeSafeTranslations()
   const { userIsAdminOrUp } = useUser()
+  const { isLibraryEnabled } = useAcquisition()
   // Optional: AppBar mounts this drawer on settings/account/upload (no LibraryProvider)
   const { filterData } = useLibraryOptional()
   const numIssues = filterData?.numIssues ?? 0
@@ -107,6 +109,16 @@ export default function SideRailContent({
       label: t('ButtonPlaylists'),
       href: `/library/${libraryId}/playlists`
     },
+    ...(mediaType === 'book' && isLibraryEnabled(libraryId)
+      ? [
+          {
+            icon: <span className="material-symbols text-2xl">travel_explore</span>,
+            label: t('LabelDiscover'),
+            href: `/library/${libraryId}/discover`,
+            mediaType: 'book' as const
+          }
+        ]
+      : []),
     {
       icon: (
         <svg className="h-6 w-6" viewBox="0 0 24 24">
