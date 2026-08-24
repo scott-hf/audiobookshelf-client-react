@@ -63,3 +63,7 @@ mobile/android/**/*.apk
 mobile/android/**/*.aab
 mobile/android/**/.cxx/
 mobile/android/captures/
+
+# Playwright (mobile/e2e) run output
+mobile/test-results/
+mobile/playwright-report/

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import BookCard from '../components/BookCard'
 import LoadingView from '../components/LoadingView'
@@ -30,15 +30,23 @@ export default function LibraryPage() {
   }, [client, libraryId])
 
   if (!libraryId) return null
-  if (error) return <p role="alert">{error}</p>
-  if (!items) return <LoadingView label="Loading books…" />
-  if (items.length === 0) return <p>No books in this library yet.</p>
 
   return (
-    <div className="library-grid">
-      {items.map((item) => (
-        <BookCard key={item.id} item={item} onSelect={(selected) => navigate(`/library/${encodeURIComponent(libraryId)}/item/${encodeURIComponent(selected.id)}`)} />
-      ))}
+    <div className="library-page">
+      <nav className="library-page-nav">
+        <Link to={`/library/${encodeURIComponent(libraryId)}/discover`}>Discover</Link>
+        <Link to={`/library/${encodeURIComponent(libraryId)}/acquisition-queue`}>Queue</Link>
+      </nav>
+      {error && <p role="alert">{error}</p>}
+      {!error && !items && <LoadingView label="Loading books…" />}
+      {!error && items && items.length === 0 && <p>No books in this library yet.</p>}
+      {!error && items && items.length > 0 && (
+        <div className="library-grid">
+          {items.map((item) => (
+            <BookCard key={item.id} item={item} onSelect={(selected) => navigate(`/library/${encodeURIComponent(libraryId)}/item/${encodeURIComponent(selected.id)}`)} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

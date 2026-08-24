@@ -1,11 +1,16 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react'
 import { type AbsClient, createAbsClient } from '../api/absClient'
+import { createMobileAcquisitionClient, type MobileAcquisitionClient } from '../api/acquisitionClient'
 import { secureVault } from '../native/secureSession'
 import { SessionState, SessionStore } from './session'
 
 export interface AuthContextValue {
   state: SessionState
   client: AbsClient
+  /** Non-null only once state.status === 'authenticated' -- routes that need it (Discover,
+   * AcquisitionQueue) only ever mount inside AuthenticatedApp, so a non-null assertion at the
+   * call site is safe there. */
+  acquisitionClient: MobileAcquisitionClient | null
   login: (serverUrl: string, username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
@@ -25,14 +30,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe
   }, [session])
 
+  const acquisitionClient = useMemo(() => (state.status === 'authenticated' ? createMobileAcquisitionClient(session) : null), [session, state.status])
+
   const value = useMemo<AuthContextValue>(
     () => ({
       state,
       client,
+      acquisitionClient,
       login: (serverUrl, username, password) => session.login(serverUrl, username, password),
       logout: () => session.logout()
     }),
-    [state, client, session]
+    [state, client, acquisitionClient, session]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

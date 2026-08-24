@@ -1,8 +1,11 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import LoadingView from './components/LoadingView'
+import { AcquisitionProvider } from './contexts/AcquisitionContext'
 import { PlayerProvider } from './player/PlayerProvider'
+import AcquisitionQueuePage from './routes/AcquisitionQueuePage'
 import BookDetailsPage from './routes/BookDetailsPage'
+import DiscoverPage from './routes/DiscoverPage'
 import LibrariesPage from './routes/LibrariesPage'
 import LibraryPage from './routes/LibraryPage'
 import LoginPage from './routes/LoginPage'
@@ -10,16 +13,20 @@ import PlayerPage from './routes/PlayerPage'
 
 function AuthenticatedApp() {
   return (
-    <PlayerProvider>
-      <Routes>
-        <Route path="/" element={<Navigate to="/libraries" replace />} />
-        <Route path="/libraries" element={<LibrariesPage />} />
-        <Route path="/library/:libraryId" element={<LibraryPage />} />
-        <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
-        <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
-        <Route path="*" element={<Navigate to="/libraries" replace />} />
-      </Routes>
-    </PlayerProvider>
+    <AcquisitionProvider>
+      <PlayerProvider>
+        <Routes>
+          <Route path="/" element={<Navigate to="/libraries" replace />} />
+          <Route path="/libraries" element={<LibrariesPage />} />
+          <Route path="/library/:libraryId" element={<LibraryPage />} />
+          <Route path="/library/:libraryId/discover" element={<DiscoverPage />} />
+          <Route path="/library/:libraryId/acquisition-queue" element={<AcquisitionQueuePage />} />
+          <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
+          <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
+          <Route path="*" element={<Navigate to="/libraries" replace />} />
+        </Routes>
+      </PlayerProvider>
+    </AcquisitionProvider>
   )
 }
 

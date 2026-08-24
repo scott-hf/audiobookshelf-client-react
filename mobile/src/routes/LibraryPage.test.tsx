@@ -22,6 +22,7 @@ function renderMobile(initialPath: string, client: Partial<AbsClient>) {
   const authValue: AuthContextValue = {
     state: { status: 'authenticated', serverUrl: 'https://books.test' },
     client: client as AbsClient,
+    acquisitionClient: null,
     login: vi.fn(),
     logout: vi.fn()
   }
