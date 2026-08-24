@@ -3,7 +3,7 @@
 - Started: 2026-08-24T10:19:02Z
 - Baseline: master @ ff3274f3291735dd857adbff4dac5f09991790ce
 - Branch: feature/mobile-acquisition-stack
-- Current commit: 931f25f61aa250e3986366926201c04a9b54a52a
+- Current commit: see `git log -1` (t400 head)
 
 ## Completed
 
@@ -67,14 +67,78 @@ Corrections applied per this item's base instructions (all verified against `wor
 - `checkLibrarrReachable` now calls the real `GET /api/health` with `x-api-key` and checks `status === "ok"` (`internal/api/health.go:29-63`), replacing the t200 placeholder.
 - `packages/acquisition-contract` now has a real CommonJS build step (`tsc -p tsconfig.build.json` -> `dist/`), since `routes/search.ts` and `routes/acquisitions.ts` now do runtime `.parse()` against its schemas; `main`/`exports` point at `dist/index.js`, and the gateway Dockerfile builds it before the gateway build and copies its `dist/` + `package.json` into the runtime stage (the workspace symlink target needed to exist there too). Added `dist/` to `.gitignore` and to `eslint.config.js`'s `ignores` (was `dist/`, only matched the repo root; changed to also include `**/dist/`).
 
+## Gate 3 (import handoff + ABS resolution, WI-1496 t400)
+
+Correlation strategy pinned FIRST in `docs/handoff/correlation-note.md` (written before any
+implementation), then Plan 3 tasks 1-6 implemented against it.
+
+| Plan/task | Commit | Verification |
+|---|---|---|
+| Correlation note (written first, authoritative over the plan doc) | docs: pin acquisition-to-staged-tree correlation strategy (e2c7fc51) | source-cited against `work/librarr @ 1b86eb1` and the reference-only ABS server checkout |
+| Import handoff plan, Task 1: path confinement + destinations | feat: confine acquisition filesystem paths (f796fa8c) | `npx vitest run src/domain/safePath.test.ts` — 19/19 pass |
+| Import handoff plan, Task 2: staged-tree stability | feat: validate staged audiobook output (ded66fa8) | `npx vitest run src/services/stagingInspector.test.ts` — 9/9 pass |
+| Import handoff plan, Task 3: atomic / verified handoff | feat: hand off staged audiobooks safely (5d9e2f49) | `npx vitest run src/services/fileHandoff.test.ts` — 11/11 pass (mocked EXDEV + real-filesystem copy path) |
+| Import handoff plan, Task 4: ABS scan + item queries | feat: add Audiobookshelf import adapter (de877dd3) | `npx vitest run src/adapters/absAdminClient.test.ts` — 9/9 pass |
+| Import handoff plan, Task 5: single-item resolution | feat: resolve imported Audiobookshelf items (21af31e9) | `npx vitest run src/services/importResolver.test.ts` — 10/10 pass |
+| Import handoff plan, Task 6: coordinator + compose e2e | feat: complete restart-safe acquisition imports | full suite + docker compose journey, below |
+
+| Check | Result | Evidence |
+|---|---|---|
+| Full gateway suite | PASS | `npx vitest run` in `services/acquisition-gateway` — **18 files, 143/143 pass** |
+| Disposable compose e2e journey | PASS | `docker compose -f deploy/acquisition/docker-compose.test.yml up --build --abort-on-container-exit gateway-e2e` -> `test/e2e/importJourney.test.ts (6 tests)`, `Test Files 1 passed (1)`, `Tests 6 passed (6)`, `gateway-e2e-1 exited with code 0` |
+| Root lint | PASS | `corepack pnpm lint` — exit 0, no findings (the pre-existing `main.ts` unused-disable warning was removed this task) |
+| Root typecheck | PASS | `corepack pnpm typecheck` — exit 0 (fixed a pre-existing `loadConfig(input: NodeJS.ProcessEnv)` signature that made every test's explicit env literal a root-typecheck error) |
+| `corepack pnpm find-hardcoded-strings` | PASS (scope still unconfirmed) | `0 findings in 0 files` — same carried-over scope question as t100/t300 |
+
+### processing -> scanning -> available now implemented (closes the t300 follow-ups)
+
+`src/services/importCoordinator.ts` owns the whole post-download pipeline and is driven each
+reconcile pass by `Reconciler.advanceImports()`. `AcquisitionService.retry()` delegates any
+failure whose `lastSuccessfulStage` is an import stage to the coordinator, so an import
+failure never re-submits to Librarr. The t300 "unreachable `scanning` retry branch" and the
+"ABS scan never triggered" follow-ups are both resolved.
+
+### Corrections applied on top of the handoff package (verified against live source)
+
+- **The plan document's `<Author>/<Title>` staging assumption AND FND-00411's `<Title>/<Author>`
+  observation are both partly wrong, and neither is usable.** `internal/organize/pipeline.go:124`
+  builds `AUDIOBOOK_DIR/<author>/<title>/`, but `internal/download/watcher.go:487-499` derives
+  those two arguments from a positional `" - "` split of the TORRENT NAME (`parts[0]` is
+  assumed to be the author). AudioBookBay names are frequently `Title - Author`, which produces
+  FND-00411's observed transposed tree. Conclusion: the staged path is a function of an
+  unreliable string heuristic and must never be inferred. Recorded as FND-00449.
+- Correlation is therefore Librarr's own library row: `source_id` (== the torrent hash,
+  `watcher.go:562`) -> `file_path` (`internal/models/book.go:104`, served by
+  `GET /api/library/audiobooks`' local fallback, `internal/api/library_external.go:56-64`).
+  Fallback is a new-tree stability scan matching metadata against BOTH path segments in either
+  order; anything ambiguous is `needs_attention`.
+- Cleanup after a confirmed import deletes the staged tree AND
+  `DELETE /api/library/audiobook/{id}` (`internal/api/router.go:311`) — both mandatory, because
+  a leftover tree is re-registered by Librarr's startup scanner (FND-00414) and a leftover row
+  blocks re-acquisition via `in_library` dedupe.
+- ABS scan trigger verified as `POST /api/libraries/:id/scan` (`server/routers/ApiRouter.js:91`);
+  item shape taken from `LibraryItem.toOldJSONMinified()` (`server/models/LibraryItem.js:1012`)
+  and `Book.oldMetadataToJSONMinified()` (`server/models/Book.js:587`) — `addedAt` is epoch ms,
+  not an ISO string.
+- The ABS scan is asynchronous, so "item not indexed yet" is a bounded WAIT in `scanning`
+  (reusing `STALL_TIMEOUT_SECONDS`), not an immediate failure; the scan POST itself lives in
+  the `scanning` stage so a retry re-scans without redoing the handoff.
+- Import resolution filters candidates by library as a HARD gate, never a scoring preference —
+  an item in another library can never be this import regardless of metadata score.
+- Final-tree modes default to `preserve` (`FINAL_TREE_MODE`), matching FND-00413's 0644/0755.
+
 ## Known blockers / external checks
 
 - `corepack pnpm find-hardcoded-strings` reports "0 files" scanned — scope not investigated this task; confirm expected behavior before relying on it as a real gate in a later task.
 - `pnpm check` (and `pnpm typecheck:workspace`/`pnpm test:workspace` at the root) will keep failing as a single command on this machine until either `pnpm` is added to PATH or the scripts are changed to invoke `pnpm run` sub-scripts explicitly; flagged for awareness, not fixed here (out of this task's scope). Always run the underlying `corepack pnpm ...` command directly instead.
 - Acquisition gateway Docker image is ~1.16GB — see Task 6 deviation note above. Not a functional blocker for Gate 1, but should be revisited before any real deployment.
 - RESOLVED in t300: `checkLibrarrReachable` now calls the real `GET /api/health`; `packages/acquisition-contract` now has a real CommonJS build step. See the Gate 2 section above.
-- t300 follow-up not yet done: the `available` state (post-scan, item visible in ABS) and the `scanning` stage (triggering an ABS library scan) are not implemented anywhere yet -- the reconciler only reaches `processing` for a Librarr `completed`/`importing` status and then leaves the row alone (Librarr's own `/api/downloads` entry drops off once its job finishes, which the reconciler treats as expected, not a signal to promote further). A later task needs to add the ABS-scan-triggering step and the `processing` -> `scanning` -> `available` transition.
-- t300 follow-up not yet done: `AcquisitionService.retry()`'s `lastSuccessfulStage === 'scanning'` branch (skip re-calling Librarr, just reset to `scanning`) is written defensively but unreachable/untested today since nothing yet sets that stage -- verify it once the scanning stage above exists.
+- RESOLVED in t400: the `processing` -> `staged` -> `importing` -> `scanning` -> `available`
+  pipeline and the ABS scan trigger are implemented (`src/services/importCoordinator.ts`), and
+  `AcquisitionService.retry()`'s import-stage branch is now reachable and tested. Superseded
+  items kept below for history:
+- (superseded by t400) the `available` state (post-scan, item visible in ABS) and the `scanning` stage (triggering an ABS library scan) are not implemented anywhere yet -- the reconciler only reaches `processing` for a Librarr `completed`/`importing` status and then leaves the row alone (Librarr's own `/api/downloads` entry drops off once its job finishes, which the reconciler treats as expected, not a signal to promote further). A later task needs to add the ABS-scan-triggering step and the `processing` -> `scanning` -> `available` transition.
+- (superseded by t400) `AcquisitionService.retry()`'s `lastSuccessfulStage === 'scanning'` branch (skip re-calling Librarr, just reset to `scanning`) is written defensively but unreachable/untested today since nothing yet sets that stage -- verify it once the scanning stage above exists.
 - t300 follow-up not yet done: reconciler's `historyRetentionSeconds` cleanup and `SearchRepository.deleteExpiredExcept` are implemented and unit-covered only indirectly (no dedicated retention/cleanup test) -- add one before relying on it in production.
 
 ## Security review
@@ -82,6 +146,12 @@ Corrections applied per this item's base instructions (all verified against `wor
 - No `server.url`, production hostname, token, key, or keystore was added. Only markdown docs (handoff copy, README, this status file) were added; no source/config changed.
 
 ## Exact next task
+
+**t400 is complete.** Next is Plan 4 in the runbook sequence (React web acquisition UI /
+Gate 4). Before leaning on `corepack pnpm check` as a real Gate 4 gate, resolve the
+`find-hardcoded-strings` "0 files" scope question carried since t100.
+
+### Historical (t300 — already done)
 
 Gate 2 (Librarr acquisition flow) is implemented and all tests pass (see Gate 2 section above), but **the working tree has NOT been committed yet** -- the worker that did this implementation hit its context-rotation threshold immediately after finishing verification. Next worker: review the uncommitted diff, then create the 5 per-task commits using the plan's own commit messages (task boundaries below), in order:
 1. `feat: adapt Librarr audiobook API` -- `src/adapters/`, `test/fixtures/librarr/`, plus the `status.ts` real-health-check fix (carried from t200 HANDOFF, same task).

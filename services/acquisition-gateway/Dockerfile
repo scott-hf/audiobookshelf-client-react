@@ -16,6 +16,15 @@ RUN pnpm --filter @abs/acquisition-gateway... install --frozen-lockfile --ignore
   && pnpm --filter @abs/acquisition-contract build \
   && pnpm --filter @abs/acquisition-gateway build
 
+# Disposable integration target (deploy/acquisition/docker-compose.test.yml). Reuses the
+# build stage, which already carries devDependencies (vitest) and the compiled contract, and
+# adds nothing to the production image below. Staging and library roots are mounted as two
+# SEPARATE volumes so `rename(2)` across them returns EXDEV and the verified-copy handoff
+# path is exercised for real, which it cannot be on a single-filesystem dev host.
+FROM build AS e2e
+WORKDIR /repo/services/acquisition-gateway
+CMD ["pnpm", "exec", "vitest", "run", "test/e2e"]
+
 FROM node:22-alpine
 # pnpm's workspace node_modules are symlink-based into the repo-root virtual store
 # (node_modules/.pnpm); `pnpm deploy` (the usual fix) re-resolves the whole workspace

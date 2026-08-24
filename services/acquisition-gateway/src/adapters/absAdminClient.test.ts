@@ -82,9 +82,10 @@ describe('AbsAdminClient', () => {
       [500, 'abs_error']
     ] as const) {
       const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: `boom ${TOKEN}` }, status))
-      const error = await client(fetcher as unknown as typeof fetch)
+      const error = (await client(fetcher as unknown as typeof fetch)
         .scanLibrary('lib1')
-        .catch((e) => e as AbsApiError)
+        .then(() => null)
+        .catch((e) => e)) as AbsApiError
       expect(error).toBeInstanceOf(AbsApiError)
       expect(error.code).toBe(code)
       expect(error.status).toBe(status)
@@ -94,9 +95,10 @@ describe('AbsAdminClient', () => {
 
   it('turns a transport failure into abs_unreachable without leaking the token', async () => {
     const fetcher = vi.fn().mockRejectedValue(new Error(`connect ECONNREFUSED with ${TOKEN}`))
-    const error = await client(fetcher as unknown as typeof fetch)
+    const error = (await client(fetcher as unknown as typeof fetch)
       .scanLibrary('lib1')
-      .catch((e) => e as AbsApiError)
+      .then(() => null)
+      .catch((e) => e)) as AbsApiError
     expect(error.code).toBe('abs_unreachable')
     expect(error.message).not.toContain(TOKEN)
   })
@@ -108,9 +110,10 @@ describe('AbsAdminClient', () => {
           init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
         })
     )
-    const error = await client(fetcher as unknown as typeof fetch, 10)
+    const error = (await client(fetcher as unknown as typeof fetch, 10)
       .scanLibrary('lib1')
-      .catch((e) => e as AbsApiError)
+      .then(() => null)
+      .catch((e) => e)) as AbsApiError
     expect(error.code).toBe('abs_unreachable')
     expect(error.message).toContain('timed out')
   })

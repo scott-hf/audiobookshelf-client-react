@@ -9,14 +9,24 @@ import { openDatabase } from './db/database'
 import { SearchRepository } from './db/searchRepository'
 import { AcquisitionRepository } from './db/acquisitionRepository'
 import { LibrarrClient } from './adapters/librarrClient'
+import { AbsAdminClient } from './adapters/absAdminClient'
 import { SearchService } from './services/searchService'
 import { AcquisitionService } from './services/acquisitionService'
 import { Reconciler } from './services/reconciler'
+import { ImportCoordinator } from './services/importCoordinator'
+import { StagingInspector } from './services/stagingInspector'
+import { FileHandoff, nodeFsAdapter } from './services/fileHandoff'
 import { EventBus } from './events/eventBus'
 
 declare module 'fastify' {
   interface FastifyRequest {
     absUser?: AbsUser
+  }
+  interface FastifyInstance {
+    /** Internal seam for tests and operational tooling: lets a caller drive one reconcile
+     * pass deterministically instead of waiting on the interval timer. Not an HTTP route --
+     * it adds no public surface. */
+    acquisitionInternals: { reconcileOnce: () => Promise<void> }
   }
 }
 
@@ -27,6 +37,9 @@ export interface BuildAppOptions {
   /** Separate injectable fetcher for the LibrarrClient -- lets tests stub Librarr responses
    * independently of the ABS auth fetcher. Defaults to `fetcher`. */
   librarrFetcher?: typeof fetch
+  /** Separate injectable fetcher for the privileged ABS admin client (scan/items). Defaults
+   * to `fetcher`; the e2e harness points it at a fake ABS. */
+  absAdminFetcher?: typeof fetch
   logger?: boolean
 }
 
@@ -70,14 +83,52 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     repo: searchRepo,
     ttlSeconds: options.config.SEARCH_TTL_SECONDS
   })
-  const acquisitionService = new AcquisitionService({ librarr, repo: acquisitionRepo, searchService })
   const eventBus = new EventBus()
+
+  // Import handoff (Plan 3 / Gate 3): processing -> staged -> importing -> scanning ->
+  // available. Correlation and cleanup policy are pinned in docs/handoff/correlation-note.md.
+  const absAdmin = new AbsAdminClient({
+    baseUrl: options.config.ABS_INTERNAL_URL,
+    serviceToken: options.config.ABS_SERVICE_TOKEN,
+    fetcher: options.absAdminFetcher ?? fetcher
+  })
+  const fsAdapter = nodeFsAdapter()
+  const importCoordinator = new ImportCoordinator({
+    repo: acquisitionRepo,
+    librarr,
+    abs: absAdmin,
+    inspector: new StagingInspector({
+      stagingRoot: options.config.stagingRoot,
+      stabilitySeconds: options.config.STAGING_STABILITY_SECONDS
+    }),
+    handoff: new FileHandoff(fsAdapter),
+    fs: fsAdapter,
+    libraries: options.config.libraries,
+    stallTimeoutSeconds: options.config.STALL_TIMEOUT_SECONDS,
+    cleanupEnabled: options.config.IMPORT_CLEANUP_ENABLED,
+    finalTreeMode: options.config.FINAL_TREE_MODE,
+    finalTreeFileMode: parseInt(options.config.FINAL_TREE_FILE_MODE, 8),
+    finalTreeDirMode: parseInt(options.config.FINAL_TREE_DIR_MODE, 8),
+    onEvent: (acquisitionId) => {
+      const record = acquisitionRepo.findById(acquisitionId)
+      if (record) eventBus.publish(record.absUserId, { type: 'acquisition.updated', acquisitionId })
+    },
+    log: { warn: (obj, msg) => app.log.warn(obj as object, msg) }
+  })
+
+  const acquisitionService = new AcquisitionService({
+    librarr,
+    repo: acquisitionRepo,
+    searchService,
+    importCoordinator
+  })
 
   let ready = false
   const reconciler = new Reconciler({
     librarr,
     repo: acquisitionRepo,
     searchRepo,
+    importCoordinator,
     intervalMs: options.config.RECONCILE_INTERVAL_MS,
     stallTimeoutSeconds: options.config.STALL_TIMEOUT_SECONDS,
     historyRetentionSeconds: options.config.HISTORY_RETENTION_SECONDS,
@@ -105,6 +156,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     reconciler.stop()
     db.close()
   })
+
+  app.decorate('acquisitionInternals', { reconcileOnce: () => reconciler.runOnce() })
 
   registerStatusRoute(app, options.config, fetcher)
   registerSearchRoute(app, searchService)

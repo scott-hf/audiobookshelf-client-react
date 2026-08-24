@@ -55,7 +55,7 @@ describe('gateway database', () => {
     )
     expect(tables).toEqual(expect.arrayContaining(['acquisitions', 'schema_migrations', 'search_sessions']))
     expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
-      1, 2
+      1, 2, 3
     ])
   })
 
@@ -64,7 +64,7 @@ describe('gateway database', () => {
     // against the same handle must not throw or duplicate the schema_migrations row.
     const db2 = openDatabase(':memory:')
     expect((db2.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
-      1, 2
+      1, 2, 3
     ])
     db2.close()
   })
@@ -93,12 +93,15 @@ describe('gateway database', () => {
       expect(existsSync(dbPath)).toBe(true)
 
       const reopened = openDatabase(dbPath)
-      const record = new AcquisitionRepository(reopened).findById('a1')
-      expect(record).toMatchObject({ id: 'a1', title: 'Book', state: 'queued' })
-      expect((reopened.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)).toEqual([
-        1, 2
-      ])
-      reopened.close()
+      try {
+        const record = new AcquisitionRepository(reopened).findById('a1')
+        expect(record).toMatchObject({ id: 'a1', title: 'Book', state: 'queued' })
+        expect(
+          (reopened.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as { version: number }[]).map((r) => r.version)
+        ).toEqual([1, 2, 3])
+      } finally {
+        reopened.close()
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

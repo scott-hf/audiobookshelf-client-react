@@ -5,6 +5,11 @@ import { DomainError } from '../domain/errors'
 import { opaqueId, isRequestable } from '../domain/releaseIdentity'
 import { trackingKey, trackingKeyKind, trackingKeyValue } from '../domain/librarrTrackingKey'
 import type { SearchService } from './searchService'
+import type { ImportCoordinator } from './importCoordinator'
+
+/** Stages owned by the ImportCoordinator; a retry from any of these resumes the import
+ * pipeline and must never reach Librarr's submit endpoint again. */
+const IMPORT_STAGES = new Set(['staged', 'importing', 'scanning', 'available'])
 
 export interface CreateAcquisitionInput {
   searchSessionId: string
@@ -16,6 +21,8 @@ export interface AcquisitionServiceOptions {
   librarr: LibrarrClient
   repo: AcquisitionRepository
   searchService: SearchService
+  /** Owns retries whose last successful stage is inside the import pipeline. */
+  importCoordinator?: Pick<ImportCoordinator, 'retry'>
   now?: () => number
 }
 
@@ -48,12 +55,14 @@ export class AcquisitionService {
   private readonly librarr: LibrarrClient
   private readonly repo: AcquisitionRepository
   private readonly searchService: SearchService
+  private readonly importCoordinator?: Pick<ImportCoordinator, 'retry'>
   private readonly now: () => number
 
   constructor(options: AcquisitionServiceOptions) {
     this.librarr = options.librarr
     this.repo = options.repo
     this.searchService = options.searchService
+    this.importCoordinator = options.importCoordinator
     this.now = options.now ?? Date.now
   }
 
@@ -155,7 +164,8 @@ export class AcquisitionService {
   /** Retry resumes from lastSuccessfulStage. Torrent and NZB tracking keys resubmit the
    * persisted snapshot from scratch (Librarr's job-retry endpoint does not apply to
    * torrents -- WI-1496 correction #5); only a direct-download `job:` key calls Librarr's
-   * own retry endpoint. A hypothetical future `scanning` stage never calls Librarr at all. */
+   * own retry endpoint. A failure from any import stage is delegated to the ImportCoordinator
+   * and never touches Librarr at all. */
   async retry(user: { id: string }, id: string): Promise<Acquisition> {
     const record = this.findOwned(user, id)
     if (!RETRYABLE_STATES.has(record.state)) {
@@ -167,9 +177,14 @@ export class AcquisitionService {
 
     const updatedAt = new Date(this.now()).toISOString()
 
-    if (record.lastSuccessfulStage === 'scanning') {
-      this.repo.update(id, { state: 'scanning', errorCode: null, errorMessage: null, errorRetryable: false, updatedAt })
-      return toPublicAcquisition(this.repo.findById(id)!)
+    // A failure inside the import pipeline resumes from its own last durable boundary: the
+    // book is already downloaded (and often already moved), so re-submitting to Librarr would
+    // be a pointless redownload. See docs/handoff/correlation-note.md.
+    if (record.lastSuccessfulStage && IMPORT_STAGES.has(record.lastSuccessfulStage)) {
+      if (!this.importCoordinator) {
+        throw new DomainError('acquisition_not_retryable', 'acquisition_not_retryable: import retries are not enabled', false)
+      }
+      return toPublicAcquisition(await this.importCoordinator.retry(record))
     }
 
     if (record.trackingKey && trackingKeyKind(record.trackingKey) === 'job') {

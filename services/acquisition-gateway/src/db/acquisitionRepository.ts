@@ -29,6 +29,14 @@ export interface AcquisitionRecord {
   /** Set the first time the reconciler observes 0 bytes/0% progress on a downloading row;
    * cleared once progress advances. Backs the stall-timeout policy (FND-00410). */
   stalledSince?: string | null
+  /** Librarr's own local library row id for this acquisition, correlated by source_id ==
+   * tracking-key hash. Retained so the row can be DELETEd after a confirmed import
+   * (docs/handoff/correlation-note.md section 6). */
+  librarrLibraryItemId?: string | null
+  /** Content fingerprint captured when the staged tree was declared stable. */
+  stagingFingerprint?: string | null
+  /** When the ABS scan for this import was triggered; feeds the resolver's scan window. */
+  scanStartedAt?: string | null
   createdAt: string
   updatedAt: string
   completedAt?: string | null
@@ -58,6 +66,9 @@ interface AcquisitionRow {
   error_retryable: number
   last_successful_stage: string | null
   stalled_since: string | null
+  librarr_library_item_id: string | null
+  staging_fingerprint: string | null
+  scan_started_at: string | null
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -90,6 +101,9 @@ function rowToRecord(row: AcquisitionRow): AcquisitionRecord {
     errorRetryable: Boolean(row.error_retryable),
     lastSuccessfulStage: row.last_successful_stage,
     stalledSince: row.stalled_since,
+    librarrLibraryItemId: row.librarr_library_item_id,
+    stagingFingerprint: row.staging_fingerprint,
+    scanStartedAt: row.scan_started_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at
@@ -110,6 +124,9 @@ const UPDATABLE_FIELDS: Record<string, string> = {
   errorRetryable: 'error_retryable',
   lastSuccessfulStage: 'last_successful_stage',
   stalledSince: 'stalled_since',
+  librarrLibraryItemId: 'librarr_library_item_id',
+  stagingFingerprint: 'staging_fingerprint',
+  scanStartedAt: 'scan_started_at',
   updatedAt: 'updated_at',
   completedAt: 'completed_at'
 }
@@ -124,12 +141,14 @@ export class AcquisitionRepository {
           id, abs_user_id, abs_library_id, idempotency_key, search_session_id, release_id,
           tracking_key, title, author, narrators_json, format, size_bytes, source_label,
           state, progress_percent, staging_path, final_path, abs_item_id, error_code,
-          error_message, error_retryable, last_successful_stage, stalled_since, created_at, updated_at, completed_at
+          error_message, error_retryable, last_successful_stage, stalled_since,
+          librarr_library_item_id, staging_fingerprint, scan_started_at, created_at, updated_at, completed_at
         ) VALUES (
           @id, @absUserId, @absLibraryId, @idempotencyKey, @searchSessionId, @releaseId,
           @trackingKey, @title, @author, @narratorsJson, @format, @sizeBytes, @sourceLabel,
           @state, @progressPercent, @stagingPath, @finalPath, @absItemId, @errorCode,
-          @errorMessage, @errorRetryable, @lastSuccessfulStage, @stalledSince, @createdAt, @updatedAt, @completedAt
+          @errorMessage, @errorRetryable, @lastSuccessfulStage, @stalledSince,
+          @librarrLibraryItemId, @stagingFingerprint, @scanStartedAt, @createdAt, @updatedAt, @completedAt
         )`
       )
       .run(this.toParams(record))
@@ -150,12 +169,14 @@ export class AcquisitionRepository {
           id, abs_user_id, abs_library_id, idempotency_key, search_session_id, release_id,
           tracking_key, title, author, narrators_json, format, size_bytes, source_label,
           state, progress_percent, staging_path, final_path, abs_item_id, error_code,
-          error_message, error_retryable, last_successful_stage, stalled_since, created_at, updated_at, completed_at
+          error_message, error_retryable, last_successful_stage, stalled_since,
+          librarr_library_item_id, staging_fingerprint, scan_started_at, created_at, updated_at, completed_at
         ) VALUES (
           @id, @absUserId, @absLibraryId, @idempotencyKey, @searchSessionId, @releaseId,
           @trackingKey, @title, @author, @narratorsJson, @format, @sizeBytes, @sourceLabel,
           @state, @progressPercent, @stagingPath, @finalPath, @absItemId, @errorCode,
-          @errorMessage, @errorRetryable, @lastSuccessfulStage, @stalledSince, @createdAt, @updatedAt, @completedAt
+          @errorMessage, @errorRetryable, @lastSuccessfulStage, @stalledSince,
+          @librarrLibraryItemId, @stagingFingerprint, @scanStartedAt, @createdAt, @updatedAt, @completedAt
         )`
       )
       .run(this.toParams(record))
@@ -180,6 +201,9 @@ export class AcquisitionRepository {
       errorMessage: null,
       lastSuccessfulStage: null,
       stalledSince: null,
+      librarrLibraryItemId: null,
+      stagingFingerprint: null,
+      scanStartedAt: null,
       completedAt: null,
       ...record,
       errorRetryable: record.errorRetryable ? 1 : 0

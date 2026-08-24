@@ -73,6 +73,42 @@ export const LibrarrDownloadsResponseSchema = z.object({
 
 export const LibrarrHealthResponseSchema = z.object({ status: z.string() }).passthrough()
 
+// Librarr's own local library rows (internal/models/book.go:104 LibraryItem, serialized by
+// internal/db/library.go:456 ItemToJSON, served by GET /api/library/audiobooks ->
+// serveLocalLibraryByMediaType when ABS is unset -- internal/api/library_external.go:56-64).
+//
+// `source_id` is the TORRENT HASH (internal/download/watcher.go:562), which is what makes it
+// joinable to the gateway's `torrent:<hash>` tracking key. `file_path` is the destination
+// OrganizeAudiobook actually chose, and is the ONLY trustworthy staged path -- see
+// docs/handoff/correlation-note.md sections 1-2 for why the path shape itself must not be
+// inferred.
+export const LibrarrLibraryItemSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]),
+    title: z.string().optional().default(''),
+    author: z.string().optional().default(''),
+    file_path: z.string().optional().default(''),
+    original_path: z.string().optional(),
+    file_size: z.number().optional(),
+    file_format: z.string().optional(),
+    media_type: z.string().optional(),
+    source: z.string().optional(),
+    source_id: z.string().optional().default(''),
+    added_at: z.string().optional()
+  })
+  .passthrough()
+
+export const LibrarrLibraryResponseSchema = z
+  .object({
+    items: z.array(LibrarrLibraryItemSchema),
+    total: z.number().optional(),
+    page: z.number().optional(),
+    pages: z.number().optional()
+  })
+  .passthrough()
+
+export type LibrarrLibraryItem = z.infer<typeof LibrarrLibraryItemSchema>
+
 export type LibrarrSearchResult = z.infer<typeof LibrarrSearchResultSchema>
 export type LibrarrSubmitResponse = z.infer<typeof LibrarrSubmitResponseSchema>
 export type LibrarrDownloadStatus = z.infer<typeof LibrarrDownloadStatusSchema>

@@ -23,3 +23,16 @@ CREATE INDEX acquisitions_user_library_updated ON acquisitions(abs_user_id, abs_
 -- no progress past 0 bytes for STALL_TIMEOUT_SECONDS moves the row to failed/retryable.
 ALTER TABLE acquisitions RENAME COLUMN librarr_job_id TO tracking_key;
 ALTER TABLE acquisitions ADD COLUMN stalled_since TEXT;
+
+-- Migration 3 (WI-1496 t400): import-handoff recovery boundaries. Every column here exists so
+-- a restart can re-derive its next action from persisted state alone.
+--   librarr_library_item_id  the Librarr local library row correlated by source_id; needed to
+--                            DELETE the stale row after import so in_library dedupe cannot
+--                            block a future acquisition (correlation-note.md s.2/s.6).
+--   staging_fingerprint      content fingerprint captured when the tree was declared stable;
+--                            lets a restart tell "my own finished import" apart from an
+--                            unrelated directory sitting at the destination.
+--   scan_started_at          the ABS scan window used for import resolution scoring.
+ALTER TABLE acquisitions ADD COLUMN librarr_library_item_id TEXT;
+ALTER TABLE acquisitions ADD COLUMN staging_fingerprint TEXT;
+ALTER TABLE acquisitions ADD COLUMN scan_started_at TEXT;

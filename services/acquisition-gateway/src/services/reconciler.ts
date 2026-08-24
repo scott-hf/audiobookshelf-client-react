@@ -4,6 +4,10 @@ import { AcquisitionRepository, type AcquisitionRecord } from '../db/acquisition
 import { SearchRepository } from '../db/searchRepository'
 import { normalizeInfoHash } from '../domain/releaseIdentity'
 import { mayAdvance, normalizeLibrarrStatus } from '../domain/statusNormalization'
+import type { ImportCoordinator } from './importCoordinator'
+
+/** States the ImportCoordinator owns once Librarr's own work is finished. */
+const IMPORT_STATES = new Set(['processing', 'staged', 'importing', 'scanning'])
 
 export interface ReconcilerOptions {
   librarr: LibrarrClient
@@ -16,6 +20,9 @@ export interface ReconcilerOptions {
   stallTimeoutSeconds: number
   /** Terminal rows last updated before this many seconds ago are pruned each cycle. */
   historyRetentionSeconds?: number
+  /** Drives processing -> staged -> importing -> scanning -> available. Optional so the
+   * reconciler stays testable in isolation; without it a row simply parks in `processing`. */
+  importCoordinator?: ImportCoordinator
   now?: () => number
   onEvent?: (acquisitionId: string) => void
 }
@@ -45,6 +52,8 @@ export class Reconciler {
       for (const record of nonTerminal) {
         this.reconcileOne(record, byKey)
       }
+
+      await this.advanceImports()
 
       this.cleanup()
     } finally {
@@ -109,6 +118,25 @@ export class Reconciler {
     }
     this.opts.repo.update(record.id, patch)
     this.opts.onEvent?.(record.id)
+  }
+
+  /**
+   * Hands every row Librarr is done with to the import coordinator. Runs after the Librarr
+   * correlation pass so a row that only just reached `processing` is picked up in the same
+   * cycle. Each row is isolated: one book's import failure never stops another's.
+   */
+  private async advanceImports(): Promise<void> {
+    const coordinator = this.opts.importCoordinator
+    if (!coordinator) return
+    for (const record of this.opts.repo.listNonTerminal()) {
+      if (!IMPORT_STATES.has(record.state)) continue
+      try {
+        await coordinator.advance(record)
+      } catch {
+        // advance() already persists its own failure states; a throw here would only be an
+        // unexpected bug, and must not abort the remaining rows.
+      }
+    }
   }
 
   private cleanup(): void {

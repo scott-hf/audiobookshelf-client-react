@@ -4,9 +4,11 @@ import {
   LibrarrSubmitResponseSchema,
   LibrarrDownloadsResponseSchema,
   LibrarrHealthResponseSchema,
+  LibrarrLibraryResponseSchema,
   type LibrarrSearchResult,
   type LibrarrSubmitResponse,
-  type LibrarrDownloadStatus
+  type LibrarrDownloadStatus,
+  type LibrarrLibraryItem
 } from './librarrSchemas'
 
 export class LibrarrApiError extends Error {
@@ -120,6 +122,44 @@ export class LibrarrClient {
   async retryJob(jobId: string): Promise<boolean> {
     const response = await this.request(`/api/downloads/jobs/${encodeURIComponent(jobId)}/retry`, successSchema, {
       method: 'POST'
+    })
+    return response.success
+  }
+
+  /**
+   * Librarr's own local library rows, paged. With ABS unset in Librarr (mandated by
+   * 02-SETTLED-DECISIONS.md) this serves the local-DB fallback, which is what carries the
+   * `source_id` -> `file_path` mapping the gateway correlates on
+   * (docs/handoff/correlation-note.md section 2).
+   */
+  async getLibraryAudiobooks(page = 1): Promise<LibrarrLibraryItem[]> {
+    const response = await this.request(
+      `/api/library/audiobooks?${new URLSearchParams({ page: String(page) })}`,
+      LibrarrLibraryResponseSchema
+    )
+    return response.items
+  }
+
+  /** Every local audiobook row, paged (Librarr's local fallback pages at 100). */
+  async getAllLibraryAudiobooks(): Promise<LibrarrLibraryItem[]> {
+    const all: LibrarrLibraryItem[] = []
+    for (let page = 1; page <= 200; page += 1) {
+      const items = await this.getLibraryAudiobooks(page)
+      all.push(...items)
+      if (items.length < 100) break
+    }
+    return all
+  }
+
+  /**
+   * DELETE /api/library/audiobook/{id} (internal/api/router.go:311 -> handleDeleteBook,
+   * library_external.go:410 `{"success": true}`). Removing the row after a confirmed import
+   * is mandatory, not hygiene: the row's `in_library` dedupe would otherwise block a future
+   * acquisition of the same book (correlation-note.md section 6).
+   */
+  async deleteLibraryAudiobook(id: string | number): Promise<boolean> {
+    const response = await this.request(`/api/library/audiobook/${encodeURIComponent(String(id))}`, successSchema, {
+      method: 'DELETE'
     })
     return response.success
   }

@@ -38,6 +38,17 @@ CREATE INDEX acquisitions_user_library_updated ON acquisitions(abs_user_id, abs_
 ALTER TABLE acquisitions RENAME COLUMN librarr_job_id TO tracking_key;
 ALTER TABLE acquisitions ADD COLUMN stalled_since TEXT;
 `.trim()
+  },
+  {
+    // WI-1496 t400: import-handoff recovery boundaries. Each column lets a restart re-derive
+    // its next action from persisted state alone -- see docs/handoff/correlation-note.md.
+    // Kept in sync with ./migrations/001_initial.sql.
+    version: 3,
+    sql: `
+ALTER TABLE acquisitions ADD COLUMN librarr_library_item_id TEXT;
+ALTER TABLE acquisitions ADD COLUMN staging_fingerprint TEXT;
+ALTER TABLE acquisitions ADD COLUMN scan_started_at TEXT;
+`.trim()
   }
 ]
 

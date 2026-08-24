@@ -1,0 +1,41 @@
+# Disposable integration environment for the acquisition import handoff (Plan 3 / Gate 3).
+#
+#   docker compose -f deploy/acquisition/docker-compose.test.yml up --build \
+#     --abort-on-container-exit gateway-e2e
+#   docker compose -f deploy/acquisition/docker-compose.test.yml down -v
+#
+# Everything here is disposable and self-contained: no droplet, no real Audiobookshelf, no
+# real Librarr, no host paths. Librarr and ABS are faked in-process by the journey test
+# (services/acquisition-gateway/test/e2e/importJourney.test.ts) exactly as
+# 02-SETTLED-DECISIONS.md prescribes when credentials are absent.
+#
+# The point of running it in compose rather than on the dev host is the FILESYSTEM: `staging`
+# and `library` are two separate named volumes, so `rename(2)` between them returns EXDEV and
+# the verified hidden-copy handoff path executes for real, under Linux ownership and
+# permission semantics. A single-filesystem dev host only ever exercises the atomic-rename
+# branch.
+
+name: acquisition-gateway-e2e
+
+services:
+  gateway-e2e:
+    build:
+      context: ../..
+      dockerfile: services/acquisition-gateway/Dockerfile
+      target: e2e
+    environment:
+      # Consumed by the journey test to place its disposable roots on the two volumes.
+      E2E_STAGING_ROOT: /staging
+      E2E_LIBRARY_ROOT: /library
+      CI: "true"
+    volumes:
+      - staging:/staging
+      - library:/library
+    # Never a host mount and never a real service address: nothing in this file can reach a
+    # production Audiobookshelf, Librarr, Decypharr or TorBox.
+    network_mode: none
+    command: ["pnpm", "exec", "vitest", "run", "test/e2e"]
+
+volumes:
+  staging:
+  library:

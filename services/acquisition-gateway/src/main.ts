@@ -32,7 +32,6 @@ async function main(): Promise<void> {
 }
 
 if (process.argv.includes('--help')) {
-  // eslint-disable-next-line no-console
   console.log('acquisition-gateway: reads its configuration from environment variables. See services/acquisition-gateway/src/config.ts.')
   process.exit(0)
 } else {
