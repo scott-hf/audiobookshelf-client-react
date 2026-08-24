@@ -37,4 +37,19 @@ export class SearchRepository {
       createdAt: row.created_at as string
     }
   }
+
+  /** Deletes expired sessions, skipping any id in `referencedIds` -- an acquisition's
+   * search_session_id is a FOREIGN KEY, so a still-referenced session must survive even
+   * past its search TTL (the acquisition itself is the source of truth once submitted). */
+  deleteExpiredExcept(nowIso: string, referencedIds: string[]): number {
+    if (referencedIds.length === 0) {
+      const info = this.db.prepare('DELETE FROM search_sessions WHERE expires_at < ?').run(nowIso)
+      return info.changes
+    }
+    const placeholders = referencedIds.map(() => '?').join(', ')
+    const info = this.db
+      .prepare(`DELETE FROM search_sessions WHERE expires_at < ? AND id NOT IN (${placeholders})`)
+      .run(nowIso, ...referencedIds)
+    return info.changes
+  }
 }
