@@ -8,6 +8,8 @@ describe('acquisition client', () => {
         JSON.stringify({
           version: '1.0.0',
           ready: true,
+          librarr: { reachable: true },
+          staging: { ready: true },
           libraries: [{ id: 'lib1', enabled: true }]
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }

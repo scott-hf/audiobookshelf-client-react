@@ -13,6 +13,8 @@ export class AcquisitionApiError extends Error {
 export interface AcquisitionStatusResponse {
   version: string
   ready: boolean
+  librarr: { reachable: boolean }
+  staging: { ready: boolean }
   libraries: { id: string; enabled: boolean }[]
 }
 

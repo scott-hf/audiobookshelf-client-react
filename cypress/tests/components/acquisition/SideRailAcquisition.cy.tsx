@@ -25,7 +25,13 @@ function createMockUserContextValue(): UserContextType {
 
 function createMockAcquisitionContextValue(enabledLibraries: string[]): AcquisitionContextValue {
   return {
-    status: { version: '1.0.0', ready: true, libraries: enabledLibraries.map((id) => ({ id, enabled: true })) },
+    status: {
+      version: '1.0.0',
+      ready: true,
+      librarr: { reachable: true },
+      staging: { ready: true },
+      libraries: enabledLibraries.map((id) => ({ id, enabled: true }))
+    },
     isLibraryEnabled: (libraryId: string) => enabledLibraries.includes(libraryId),
     getQueue: () => undefined,
     ensureQueueLoaded: () => {},

@@ -349,6 +349,86 @@ existing hook, mirroring `UserContext`, specifically so tests can mock it the sa
    a generic message for anything else (e.g. a raw 500). Not unit-tested directly this task, only
    exercised indirectly via `DiscoverClient.cy.tsx`'s error-toast test.
 
+## Gate 4 continuation 2 (worker-6, 2026-08-24) -- Task 5 DONE and verified; Task 6 (e2e) infra built but NOT green yet; Docker re-verify NOT run
+
+### Task 5 -- settings diagnostics page (DONE, committed, verified)
+
+Files: `src/app/(main)/settings/acquisition/page.tsx`, `AcquisitionSettingsClient.tsx`,
+`settingsNavItems.ts` (+`HeaderAcquisition` nav entry),
+`cypress/tests/components/acquisition/AcquisitionSettingsClient.cy.tsx`.
+
+**Real defect found and fixed along the way:** `AcquisitionStatusResponse` in
+`packages/acquisition-client/src/index.ts` was missing `librarr: {reachable}` and
+`staging: {ready}` -- the gateway's actual `/status` route
+(`services/acquisition-gateway/src/routes/status.ts` `StatusResponse`) has always returned
+those fields, but the browser client's type never declared them, so nothing on the frontend
+could read them (needed for this task). Fixed the interface, and updated the two now-stale
+literal status mocks that broke typecheck as a result (`SideRailAcquisition.cy.tsx`,
+`packages/acquisition-client/src/index.test.ts`).
+
+Evidence (all run individually this task):
+- `corepack pnpm test:spec cypress/tests/components/acquisition/AcquisitionSettingsClient.cy.tsx` -- 3/3 pass.
+- `corepack pnpm --filter @abs/acquisition-client test` -- 1/1 pass.
+- `corepack pnpm lint` -- exit 0. `corepack pnpm typecheck` -- exit 0.
+  `corepack pnpm find-hardcoded-strings` -- `0 findings in 0 files`.
+- Full acquisition component suite re-run after the change (`corepack pnpm test:spec
+  "cypress/tests/components/acquisition/*.cy.tsx"`, background run) -- exit 0.
+
+Committed as `feat: show acquisition gateway diagnostics` (plan's own message).
+
+### Task 6 -- e2e journey (infra built, NOT yet verified green; UNCOMMITTED)
+
+Files (uncommitted, present in the working tree): `cypress.config.ts` (+`e2e` project,
+baseUrl `http://localhost:3000`), `cypress/support/e2e.ts` (`cy.loginByApi()` +
+`&cy-id` shorthand), `cypress/e2e/acquisition.cy.ts`, `cypress/e2e/support/fakeAbsServer.mjs`,
+`cypress/fixtures/acquisition/search.json`, `cypress/fixtures/acquisition/queue-available.json`.
+
+The plan's own e2e snippet (`cy.loginByApi()`, `cy.intercept` on `/acquisition-api/v1/*`) is
+illustrative only: this repo has no real ABS backend, no gateway running by default, and no
+pre-existing e2e infra of any kind (`loginByApi` did not exist -- added it as a real command
+that calls the real `POST /internal-api/login` route handler). The Next server's own
+server-side login/session calls (`src/lib/api.ts` `getServerBaseUrl()` -> `/login`,
+`/api/authorize`, and `LibraryLayout`'s `getLibraries()` -> `/api/libraries`) run in the Node
+process, not the browser, so `cy.intercept` cannot reach them -- there is no way around
+standing up *something* those calls can hit. Built `fakeAbsServer.mjs`, a zero-dependency
+Node `http` server implementing exactly those endpoints (login/authorize/libraries/me) with
+synthetic, disposable data (single library `lib1`, one admin user) -- verified working
+standalone via direct `curl` this task (`POST /login`, `GET /api/libraries` both returned the
+expected shapes). `/acquisition-api/v1/*` itself stays `cy.intercept`-mocked in the spec, on
+the theory that the gateway's own business logic already has real coverage (Gates 1-3,
+`services/acquisition-gateway/test/e2e/importJourney.test.ts`) and this spec's job is the
+React UI's click-through behavior, not re-proving the backend.
+
+**Not yet done:** running `next dev` against `fakeAbsServer.mjs` and the `cypress run --e2e`
+spec end-to-end. One real run this task got the dev server up (`HOST=localhost PORT=3333
+corepack pnpm exec next dev -p 3000`, confirming the `-p` flag vs. `PORT` env split needed to
+separate "Next's own listen port" from "the ABS URL Next's server code targets" actually
+works -- `✓ Ready in 1362ms`) but surfaced a real bug before a single spec ran: hitting
+`/login` triggered a **runaway retry loop of `GET /status` requests** (10,000+ logged in under
+a second, `next-dev.log`) -- something client-side is retrying a status-shaped fetch with no
+backoff when the response doesn't match what it expects. Root cause NOT yet identified (ran
+out of budget mid-investigation) -- prime suspects: `getServerStatus()`
+(`src/lib/api.ts` ~line 464, distinct from the acquisition gateway's own `/status`) being
+polled by some component against `fakeAbsServer.mjs`'s permissive `{}` catch-all for unmatched
+GET paths, in a loop with no backoff. Next worker: reproduce with `next-dev.log` open,
+`grep -c "/status" `, find the caller of `getServerStatus`/whatever hits ABS `/status`
+repeatedly, and either fix the caller's retry logic (if it's a real app bug worth a FND) or
+give `fakeAbsServer.mjs` a real handler for that path so it stops looking like a failure worth
+retrying. All processes killed (`taskkill //F //IM node.exe //T`) before this task ended --
+nothing left running.
+
+**Do not commit `cypress/e2e/**` or `cypress.config.ts` until the spec actually runs and
+passes at both viewports** -- committing an e2e project that has never gone green would be
+worse than not having one.
+
+### Docker re-verify -- NOT RUN this task (still an open GAP carried from t300/t400)
+
+Ran out of budget before reaching this. `docker build -t acquisition-gateway-test -f
+services/acquisition-gateway/Dockerfile .` (repo root context) is still the next step, per
+t300's Dockerfile workspace-copy fix (`COPY --from=abs-client package.json pnpm-lock.yaml
+pnpm-workspace.yaml .npmrc ./` + `packages/`) -- never actually re-verified with a real build
+since that fix landed.
+
 ## Exact next task
 
 **Gate 4 is partial.** Resume with Task 4 (acquisition queue) of

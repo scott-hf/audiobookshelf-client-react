@@ -14,6 +14,7 @@ export interface SettingsNavItemDef {
     | 'HeaderItemMetadataUtils'
     | 'HeaderRSSFeeds'
     | 'HeaderAuthentication'
+    | 'HeaderAcquisition'
   href: string
 }
 
@@ -29,7 +30,8 @@ export const SETTINGS_NAV_ITEMS: SettingsNavItemDef[] = [
   { messageKey: 'HeaderEmail', href: '/settings/email' },
   { messageKey: 'HeaderItemMetadataUtils', href: '/settings/item-metadata-utils' },
   { messageKey: 'HeaderRSSFeeds', href: '/settings/rss-feeds' },
-  { messageKey: 'HeaderAuthentication', href: '/settings/authentication' }
+  { messageKey: 'HeaderAuthentication', href: '/settings/authentication' },
+  { messageKey: 'HeaderAcquisition', href: '/settings/acquisition' }
 ]
 
 export const SETTINGS_HUB_PATH = '/settings'
