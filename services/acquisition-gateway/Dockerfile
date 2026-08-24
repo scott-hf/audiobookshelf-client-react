@@ -28,9 +28,14 @@ COPY --from=build /repo/services/acquisition-gateway/dist ./services/acquisition
 COPY --from=build /repo/services/acquisition-gateway/node_modules ./services/acquisition-gateway/node_modules
 COPY --from=build /repo/services/acquisition-gateway/package.json ./services/acquisition-gateway/package.json
 # The workspace symlink node_modules/@abs/acquisition-contract -> ../../packages/acquisition-contract
-# needs its target present too -- only its built dist/ + package.json, not source or tests.
+# needs its target present too: built dist/ + package.json, AND node_modules -- the
+# contract package has a real runtime dependency (zod, for its .parse() calls) now that
+# t300 gave it a real build step, so "dist + package.json only" (t200's assumption, back
+# when the contract was type-only and zod was erased at compile) silently broke at runtime
+# with `Cannot find module 'zod'` -- reproduced via an actual `docker run`, not just build.
 COPY --from=build /repo/packages/acquisition-contract/dist ./packages/acquisition-contract/dist
 COPY --from=build /repo/packages/acquisition-contract/package.json ./packages/acquisition-contract/package.json
+COPY --from=build /repo/packages/acquisition-contract/node_modules ./packages/acquisition-contract/node_modules
 WORKDIR /repo/services/acquisition-gateway
 USER node
 CMD ["node", "dist/main.js"]
