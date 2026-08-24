@@ -42,5 +42,14 @@ export default defineConfig({
         return launchOptions
       })
     }
+  },
+  // Real browser-driven journeys against a genuinely running `next dev` server (see
+  // docs/implementation-status.md Gate 4 for how to stand up its two disposable dependencies
+  // -- cypress/e2e/support/fakeAbsServer.mjs and the /acquisition-api/v1/* cy.intercept calls
+  // in the spec itself -- before running this project).
+  e2e: {
+    baseUrl: 'http://localhost:3000',
+    specPattern: 'cypress/e2e/**/*.cy.ts',
+    supportFile: 'cypress/support/e2e.ts'
   }
 })

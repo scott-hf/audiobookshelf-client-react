@@ -1,0 +1,12 @@
+[
+  {
+    "id": "acq_e2e_00000001",
+    "libraryId": "lib1",
+    "title": "Project Hail Mary",
+    "author": "Andy Weir",
+    "state": "available",
+    "absItemId": "abs_e2e_item_1",
+    "createdAt": "2026-08-24T00:00:00.000Z",
+    "updatedAt": "2026-08-24T00:00:05.000Z"
+  }
+]

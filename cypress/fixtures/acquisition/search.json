@@ -1,0 +1,21 @@
+{
+  "searchSessionId": "search_e2e_00000001",
+  "results": [
+    {
+      "releaseId": "release_e2e_00000001",
+      "title": "Project Hail Mary",
+      "author": "Andy Weir",
+      "narrators": ["Ray Porter"],
+      "format": "m4b",
+      "sizeBytes": 742000000,
+      "durationSeconds": 58320,
+      "sourceLabel": "AudioBookBay",
+      "qualityLabel": "320kbps",
+      "seeders": 12,
+      "coverUrl": null,
+      "alreadyOwned": false,
+      "existingAbsItemId": null,
+      "requestable": true
+    }
+  ]
+}
