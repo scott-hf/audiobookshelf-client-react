@@ -10,7 +10,7 @@ export function isLibraryIssuesPage(pathname: string | null | undefined): boolea
 }
 
 const LIBRARY_SHARED_PAGES = ['items', 'issues', 'playlists', 'search', 'playlist', 'item', 'batch']
-const LIBRARY_BOOK_PAGES = ['series', 'collections', 'authors', 'narrators', 'stats', 'collection']
+const LIBRARY_BOOK_PAGES = ['series', 'collections', 'authors', 'narrators', 'stats', 'collection', 'discover', 'acquisition-queue']
 const LIBRARY_PODCAST_PAGES = ['latest', 'add-podcast', 'download-queue']
 
 export function isLibraryPageAllowed(page: string, mediaType: Library['mediaType']): boolean {

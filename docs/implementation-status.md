@@ -145,11 +145,216 @@ failure never re-submits to Librarr. The t300 "unreachable `scanning` retry bran
 
 - No `server.url`, production hostname, token, key, or keystore was added. Only markdown docs (handoff copy, README, this status file) were added; no source/config changed.
 
+## Gate 4 (React web acquisition UI, WI-1496 t500) -- PARTIAL, Tasks 1-4 of 6 done (worker-5 continuation)
+
+### worker-5 continuation (2026-08-24): Tasks 1-3 committed with real runtime evidence, Task 4 done
+
+**Real bug fixed first (Cypress binary now installed):** `SideRailContent.tsx` (already using
+`useLibraryOptional` before this task) transitively imports `src/app/actions/libraryActions.ts`
+(a `'use server'` action) -> `src/lib/api.ts`, which has a top-level `import { cookies, headers }
+from 'next/headers'`. Real Next builds split `'use server'` files into a server layer and a
+client-safe RPC stub; Cypress's component-testing webpack bundle does not run that split, so it
+fails to compile with "You're importing a module that depends on next/headers... but you are
+using it in the Pages Router." Root-caused two things, NOT a Cypress config workaround alone:
+1. `next-swc-loader`'s check is a static-source scan of the literal `next/headers` import text in
+   `api.ts` -- a plain `resolve.alias` on `next/headers` itself does NOT work around it (verified
+   empirically). A plain `resolve.alias` keyed on the importing file
+   (`@/app/actions/libraryActions`) ALSO does not reliably win: Next's own generated Cypress
+   webpack config already contributes a broader `'@'` alias earlier in iteration order, which
+   always matches first regardless of object-key order in our own config. Fix:
+   `NormalModuleReplacementPlugin` (from `next/dist/compiled/webpack/webpack`, since this repo has
+   no direct `webpack` devDependency) taps `beforeResolve`, which runs before alias resolution, so
+   it reliably replaces `@/app/actions/libraryActions` with `cypress/support/mocks/libraryActions.ts`
+   (stub exports, throw loudly if ever actually called -- no test mounts a real `LibraryProvider`)
+   for the CT bundle only. See `cypress.config.ts` and `cypress/support/mocks/libraryActions.ts`.
+2. Once compiling, `SideRailContent`'s first-ever mount crashed on `isLibraryIssuesPage(pathname)`
+   with `Cannot read properties of null (reading 'endsWith')` -- `usePathname()` can legitimately
+   return `null` outside a full app-router context, and this pre-existing helper never guarded for
+   it. Hardened `src/hooks/useLibraryRouteGuard.ts`'s `isLibraryIssuesPage` to
+   `pathname?.endsWith('/issues') ?? false`.
+Confirmed both are genuinely pre-existing (not introduced by this feature): `git stash` +
+re-running `cypress/tests/components/widgets/ChaptersTable.cy.tsx` (an unrelated pre-existing spec)
+reproduces its own unrelated 1-test breakpoint-timing failure identically stashed vs. unstashed --
+that one is a pre-existing flake, left alone (out of scope, not caused by this task).
+
+All 3 Tasks 1-3 specs green for real:
+`corepack pnpm test:spec "cypress/tests/components/acquisition/**/*.cy.tsx"` -> 8/8 pass
+(AcquisitionProvider 2/2, DiscoverClient 3/3, SideRailAcquisition 3/3). Full existing component
+suite also re-run (`cypress/tests/components/**/*.cy.tsx`, 638 tests, 31 specs): 637/638 pass, the
+1 failure being the pre-existing ChaptersTable flake above, confirmed unrelated.
+
+Also fixed a real DiscoverClient.cy.tsx authoring bug found while getting it green: a module-level
+`cy.stub()` call outside any `it()`/`beforeEach` (`cy.stub()` cannot run outside a running test) --
+converted to a `createMockAcquisitionContext()` factory called inside `mountDiscover`.
+
+Committed Tasks 1-3 (plan's own messages, `git log --oneline -5` in this repo confirms):
+`feat: provide web acquisition state` (e5a0ad77), `feat: add acquisition navigation` (56889f46),
+`feat: add audiobook discovery screen` (c3baa744).
+
+**Task 4 (acquisition queue) implemented and committed:**
+`src/components/acquisition/AcquisitionRow.tsx`, `src/app/(main)/library/[library]/acquisition-queue/{page.tsx,AcquisitionQueueClient.tsx}`,
+test `cypress/tests/components/acquisition/AcquisitionQueueClient.cy.tsx` (8/8 pass). Follows
+`ReleaseCard.tsx`'s pattern exactly (progress clamped `Math.min(100, Math.max(0, p))`, `canOpen`/
+`canRetry`/`canCancel` derived from the real 11-value `AcquisitionState` enum, not the plan's
+shorter illustrative list). Uses `useAcquisition().getQueue`/`ensureQueueLoaded`/`applyAcquisition`
+(no second client/context built) plus an injectable `api` prop (`AcquisitionQueueApi`, mirroring
+`DiscoverApi`) for `acquisitionClient.retryAcquisition`/`cancelAcquisition` --
+**note both take only `(acquisitionId)`, no `libraryId` param** (verified against
+`packages/acquisition-client/src/index.ts:51-52`, diverges from the plan's illustrative signature).
+
+**Real bug found + fixed while wiring Task 4, unrelated to Task 4 itself:**
+`src/hooks/useLibraryRouteGuard.ts`'s `LIBRARY_BOOK_PAGES` allowlist never included `'discover'` or
+`'acquisition-queue'` (added in Tasks 2/3), so `useLibraryRouteGuard()` (called unconditionally by
+`LibraryLayoutWrapper.tsx`, which wraps every real `/library/[library]/*` route) would have
+`router.replace`'d a real browser visit to `/library/{id}/discover` straight back to
+`/library/{id}` before the page ever rendered -- invisible to the Cypress component tests since
+none of them mount `LibraryLayoutWrapper`. Added both page names to `LIBRARY_BOOK_PAGES`. This
+would have silently broken Task 6's real browser journey test had it shipped unfixed.
+
+Also caught and fixed a test-authoring bug in the new queue spec itself while writing it: calling
+`cy.stub().as('retry')` on both a fallback default AND a per-test override with the same alias
+name repoints `@retry` at whichever stub called `.as()` chronologically last (JS evaluates call
+arguments, including the override's `.as('retry')`, before the function body runs) -- NOT at the
+stub actually wired into the component via object-spread precedence. Fixed by aliasing only once
+(`api.retryAcquisition ?? cy.stub().as('retry')`), never a doubled alias.
+
+Verification this task: `corepack pnpm typecheck` exit 0, `corepack pnpm lint` exit 0 (no
+findings), `corepack pnpm find-hardcoded-strings` `0 findings in 0 files`,
+`corepack pnpm test:spec "cypress/tests/components/acquisition/AcquisitionQueueClient.cy.tsx"`
+8/8 pass.
+
+### Original t500 kickoff notes (superseded above where they conflict)
+
+`find-hardcoded-strings` "0 files" scope question resolved (t500, direct verification): it means
+"0 files WITH findings", not "0 files scanned" -- the scanner genuinely covers all 686 `.ts`/`.tsx`
+files under `src/`. Not a gap; treat it as a real gate.
+
+**Not committed yet** -- working tree has Tasks 1-3 uncommitted (context-rotation boundary hit
+mid-plan). Next worker: review the diff, then commit using the plan's own messages for tasks 1-3
+(`docs/handoff/plans/2026-08-24-react-web-acquisition-implementation-plan.md`), then continue with
+Tasks 4-6.
+
+| Plan/task | Status | Verification |
+|---|---|---|
+| Task 1: browser client + provider | DONE (uncommitted) | typecheck/lint/find-hardcoded-strings clean (see below); Cypress runtime NOT run (see gap) |
+| Task 2: conditional Discover navigation | DONE (uncommitted) | same |
+| Task 3: Discover search + confirmation | DONE (uncommitted) | same |
+| Task 4: acquisition queue | NOT STARTED | -- |
+| Task 5: settings diagnostics | NOT STARTED | -- |
+| Task 6: full browser journey (e2e) | NOT STARTED | -- |
+
+### Real API shapes used (plan's snippets are illustrative only, do not follow them literally)
+
+The plan document's Task 1/6 code snippets describe a `/libraries/{id}/...` path-based API with a
+`{ acquisitions: [] }` wrapper and a `cancel` POST route. The REAL, already-implemented gateway
+(`services/acquisition-gateway/src/routes/*.ts`, built in t300/t400) is query-param based and was
+followed instead, verified by direct route/client source citation:
+- `GET /acquisition-api/v1/status` -> `{ version, ready, librarr: {reachable}, staging: {ready}, libraries: [{id, enabled}] }`
+- `GET /acquisition-api/v1/search/audiobooks?libraryId=&q=` -> `SearchResponse {searchSessionId, results: SearchRelease[]}`
+- `POST /acquisition-api/v1/acquisitions?libraryId=` (body `CreateAcquisitionBody`) -> `Acquisition`
+- `GET /acquisition-api/v1/acquisitions?libraryId=` -> `Acquisition[]` (a bare array, NOT `{acquisitions: [...]}`)
+- `GET /acquisition-api/v1/acquisitions/:id` -> `Acquisition`
+- `POST /acquisition-api/v1/acquisitions/:id/retry` -> `Acquisition`
+- `DELETE /acquisition-api/v1/acquisitions/:id` (cancel, not a `/cancel` POST) -> `Acquisition`
+- `GET /acquisition-api/v1/events` -> SSE, named events `acquisition.created`/`acquisition.updated`, payload only carries `acquisitionId` (no `libraryId`)
+- Client singleton `packages/acquisition-client/src/index.ts` (`createAcquisitionClient`) already implements all of the above; `src/lib/acquisition.ts` wraps it with a session-refresh-on-401 retry, not a fresh client.
+
+### Auth: browser cookies are enough, no bearer token wiring needed
+
+`services/acquisition-gateway/src/auth/absAuth.ts` `extractAccessToken()` reads the `access_token`
+httpOnly cookie directly server-side (bearer header OR cookie) -- the browser's automatic
+`credentials: 'include'` cookie send is sufficient; no `getAccessToken` callback was wired into
+`createAcquisitionClient`. On a 401, `src/lib/acquisition.ts` calls the existing
+`POST /internal-api/refresh` route (`accept: application/json` header -> JSON `{success}` instead
+of a redirect, sets new cookies) once, then retries the original call once. ABS session state is
+never touched on gateway failure.
+
+### New workspace wiring (Task 1, was missing before this task)
+
+Root `package.json` had NO dependency on `@abs/acquisition-client`/`@abs/acquisition-contract`
+before this task despite both packages existing since Gate 1/2 -- added
+`"@abs/acquisition-client": "workspace:*"` and `"@abs/acquisition-contract": "workspace:*"`.
+`@abs/acquisition-client`'s `main` points at raw `.ts` (no build step) so it also needed adding to
+`next.config.ts` `transpilePackages`. The production `Dockerfile`'s `build-client` stage only
+copied `package.json`/`pnpm-lock.yaml`/`.npmrc`/`scripts` before `pnpm install --frozen-lockfile`
+-- since this is a pnpm workspace, that install would have failed without `pnpm-workspace.yaml`
+and `packages/` also present; both are now copied first (plan's Task 1 Dockerfile snippet,
+verified necessary by reading the existing stage, NOT rebuilt/tested this task -- see gaps).
+Ran `corepack pnpm install` after the `package.json` edit -- linked cleanly, `Done in 1.7s`.
+
+### Component test convention deviation (deliberate, verified against the existing suite)
+
+The plan's test snippets use `cy.findByRole`/`cy.findByLabelText` (`@testing-library/cypress`).
+That package is NOT installed anywhere in this repo (confirmed: zero references in
+`package.json`/`pnpm-lock.yaml`/existing `cypress/tests/**`). The repo's actual, consistently-used
+convention (see `cypress/tests/components/ui/Btn.cy.tsx`, `.../app/UserAppBarNav.cy.tsx`) is plain
+`cy.get`/`cy.contains` plus a `cy-id="..."` attribute convention (`cypress/support/commands.ts`
+maps a leading `&` in a selector to `[cy-id="..."]`). Did NOT add a new devDependency (avoids an
+unverified network install); wrote all three new specs using the existing convention instead,
+including a `cy-id="release-card"` attribute added to `ReleaseCard.tsx` for this purpose. Also
+followed the established `UserContext.Provider`/`AppRouterContext.Provider` direct-mock-context
+mounting pattern from `UserAppBarNav.cy.tsx` rather than mounting real providers that pull in
+`SocketProvider`/real `EventSource` (added `export const AcquisitionContext` alongside the
+existing hook, mirroring `UserContext`, specifically so tests can mock it the same way).
+
+### Verification run this task (Tasks 1-3 only)
+
+| Check | Result | Evidence |
+|---|---|---|
+| `corepack pnpm install` | PASS | `+ @abs/acquisition-client 0.1.0`, `+ @abs/acquisition-contract 0.1.0`, `Done in 1.7s` |
+| `corepack pnpm typecheck` | PASS | exit 0, no output (one round-trip fix needed: `cy.stub().resolves(x).as(...)` loses the Cypress `Agent` type through Sinon's `.resolves()`; reordered to `.as(...).resolves(x)`) |
+| `corepack pnpm lint` | PASS | exit 0, no findings |
+| `corepack pnpm find-hardcoded-strings` | PASS | `0 findings in 0 files` (see scope note above -- this is a real clean pass, not a scope gap) |
+| Cypress component test RUNTIME (`test:spec`) | NOT RUN -- environment gap | `cypress run` fails: "No version of Cypress is installed in ...\Cypress\Cache\15.9.0\Cypress" / "Please reinstall Cypress by running: cypress install". Cypress binary cache is missing/empty on this machine. Needs `corepack pnpm exec cypress install` (network fetch, not attempted -- out of budget this task) before any `test`/`test:spec`/`cy:open` command can actually execute on this machine. All three new specs (`AcquisitionProvider.cy.tsx`, `SideRailAcquisition.cy.tsx`, `DiscoverClient.cy.tsx`) are typecheck-clean and lint-clean but UNVERIFIED at runtime. |
+
+### Gaps / open items for the next worker
+
+1. **Cypress binary missing on this machine** -- run `corepack pnpm exec cypress install` first,
+   then `corepack pnpm test:spec "cypress/tests/components/acquisition/**/*.cy.tsx"` to get real
+   runtime evidence for Tasks 1-3 before trusting them, and to run Task 4/5's specs as they're
+   written.
+2. Tasks 4 (queue), 5 (settings diagnostics), 6 (e2e journey) are NOT STARTED. Locale keys for
+   Task 4/5 (`HeaderAcquisitionQueue`, `ButtonOpenBook`, `ButtonViewQueue`,
+   `MessageConfirmCancelAcquisition`, `MessageAcquisitionQueueEmpty`, `StatusAcquisition*` x11,
+   `HeaderAcquisition`, `LabelGateway`, `LabelLibrarr`, `LabelStaging`, `LabelConnected`,
+   `LabelNotReady`, `LabelEnabledLibraries`) were pre-added to `src/locales/en-us.json` this task
+   so the next worker doesn't need to re-derive them -- verify they're still adequate once the
+   actual components are written (some may need adjusting, e.g. cancel confirmation wording).
+3. Task 4's `AcquisitionRow.tsx` should follow the same pattern as `ReleaseCard.tsx`: progress
+   clamped via `Math.min(100, Math.max(0, p))`, `canOpen = state === 'available' && !!absItemId`,
+   `canRetry = state === 'failed' && error?.retryable === true`,
+   `canCancel = ['queued','submitted','downloading','processing','staged'].includes(state)` (real
+   `AcquisitionState` enum is in `packages/acquisition-contract/src/index.ts` -- 11 states, not the
+   plan's shorter list; `needs_attention` and `importing`/`scanning`/`available` also exist from
+   Gate 3's import pipeline). Use `acquisitionClient.retryAcquisition`/`cancelAcquisition` (already
+   built in `src/lib/acquisition.ts`), and `useAcquisition().ensureQueueLoaded`/`getQueue` from
+   `AcquisitionContext` (already built) to back the queue page -- do not build a second client or
+   context.
+4. Task 5's settings page: reuse `SettingsContent` (`src/app/(main)/settings/SettingsContent.tsx`)
+   and add a `HeaderAcquisition` entry to `SettingsNavItemDef`/`SETTINGS_NAV_ITEMS` in
+   `src/app/(main)/settings/settingsNavItems.ts` (both are typed unions of literal `messageKey`
+   strings -- extend the union, don't just add to the array). Status comes from
+   `useAcquisition().status` (already loads once on mount) -- no new fetch needed.
+5. Task 6 needs an actual `e2e` project added to `cypress.config.ts` (currently `component` only,
+   confirmed by reading the file this task) plus `cypress/support/e2e.ts` if one doesn't exist --
+   not investigated this task.
+6. Dockerfile change (workspace copy) was made but NOT verified with an actual `docker build` this
+   task (Task 1's plan step 4/6 build+run verification not done) -- do that before trusting the
+   container still builds.
+7. `AcquisitionApiError`/`formatAcquisitionError` in `src/lib/acquisition.ts` maps gateway error
+   `code` values to translated messages for codes seen in `services/acquisition-gateway/src/routes/
+   acquisitions.ts`/`search.ts` (`search_not_found`, `search_expired`, `release_not_found`,
+   `release_not_trackable`, `library_forbidden`, `library_mismatch`, `acquisition_not_found`,
+   `acquisition_not_retryable`, `acquisition_not_cancellable`, `gateway_not_ready`) -- falls back to
+   a generic message for anything else (e.g. a raw 500). Not unit-tested directly this task, only
+   exercised indirectly via `DiscoverClient.cy.tsx`'s error-toast test.
+
 ## Exact next task
 
-**t400 is complete.** Next is Plan 4 in the runbook sequence (React web acquisition UI /
-Gate 4). Before leaning on `corepack pnpm check` as a real Gate 4 gate, resolve the
-`find-hardcoded-strings` "0 files" scope question carried since t100.
+**Gate 4 is partial.** Resume with Task 4 (acquisition queue) of
+`docs/handoff/plans/2026-08-24-react-web-acquisition-implementation-plan.md`, using the real API
+shapes and existing `AcquisitionContext`/`acquisitionClient` documented above. Install the Cypress
+binary first so test runs produce real evidence, not just typecheck/lint.
 
 ### Historical (t300 — already done)
 
