@@ -145,7 +145,7 @@ failure never re-submits to Librarr. The t300 "unreachable `scanning` retry bran
 
 - No `server.url`, production hostname, token, key, or keystore was added. Only markdown docs (handoff copy, README, this status file) were added; no source/config changed.
 
-## Gate 4 (React web acquisition UI, WI-1496 t500) -- PARTIAL, Tasks 1-4 of 6 done (worker-5 continuation)
+## Gate 4 (React web acquisition UI, WI-1496 t500) -- CLOSED, all 6 tasks done (worker-7 continuation 3)
 
 ### worker-5 continuation (2026-08-24): Tasks 1-3 committed with real runtime evidence, Task 4 done
 
@@ -421,20 +421,109 @@ nothing left running.
 passes at both viewports** -- committing an e2e project that has never gone green would be
 worse than not having one.
 
-### Docker re-verify -- NOT RUN this task (still an open GAP carried from t300/t400)
+### Gate 4 continuation 3 (worker-7, 2026-08-24) -- Task 6 finished green, Docker re-verified, Gate 4 CLOSED
 
-Ran out of budget before reaching this. `docker build -t acquisition-gateway-test -f
-services/acquisition-gateway/Dockerfile .` (repo root context) is still the next step, per
-t300's Dockerfile workspace-copy fix (`COPY --from=abs-client package.json pnpm-lock.yaml
-pnpm-workspace.yaml .npmrc ./` + `packages/`) -- never actually re-verified with a real build
-since that fix landed.
+**Root cause of the runaway `GET /status` retry loop (found via instrumentation, not
+guessing):** `next dev`/`next start` unconditionally overwrite `process.env.PORT` to match
+their OWN resolved listen port
+(`node_modules/next/dist/server/lib/start-server.js:296`: `process.env.PORT = port + ''`).
+`src/lib/api.ts`'s `getServerBaseUrl()` builds the ABS backend target from `HOST`/`PORT`, so
+once Next boots on port 3000, `PORT` always reads back as `'3000'` regardless of what was set
+at shell-invocation time -- `getServerStatus()` (called from `src/proxy.ts` on every request
+missing a `language` cookie) ends up fetching `http://<HOST>:3000/status`, i.e. **the Next
+server's own origin**. `/status` isn't excluded by the middleware `matcher`, so that
+self-fetch re-enters `proxy()`; the internal fetch carries no cookies, so `!languageCookie` is
+true again, so it self-fetches `/status` again -- an unbounded self-referential HTTP flood
+(confirmed via a temporary `console.trace()` + call counter in `apiRequest`, all traces
+resolving to `proxy` -> `apiRequest('/status')`, never to the page render). Traced and
+resolved on a scratch instance, not blind-guessed: this consumed real Windows socket buffer
+capacity (`curl: Could not connect to server ... No buffer space`) until processes were
+force-killed.
+
+**Fix (test-launch-only, no real app code touched):** since `HOST` is the one env var Next
+never overwrites, `cypress/e2e/support/fakeAbsServer.mjs` now binds to a distinct loopback
+alias (`127.0.0.2` by default, override via `FAKE_ABS_HOST`) on the SAME port Next ends up
+using (override via `FAKE_ABS_PORT`), instead of its own dedicated port. Launch pair:
+```
+FAKE_ABS_HOST=127.0.0.2 FAKE_ABS_PORT=3000 node cypress/e2e/support/fakeAbsServer.mjs &
+HOST=127.0.0.2 corepack pnpm exec next dev -p 3000 &
+```
+Verified directly: `curl http://localhost:3000/login` -> `200`, exactly 2 `getServerStatus()`
+calls total (one from `proxy.ts`, one from `LoginPage`), zero recursion, both PIDs stable in
+`tasklist` afterward.
+
+**Second real bug found while investigating (not the loop cause, but real):**
+`fakeAbsServer.mjs`'s `/login`/`/api/authorize` responses used plain opaque strings
+(`'e2e-access-token'`) as tokens. `src/lib/jwt.ts`'s `decodeJWT()` requires a genuine
+3-segment `header.payload.signature` structure with a numeric `exp` claim -- a non-JWT string
+decodes to `null`, which `isTokenExpired()` treats as **already expired**, so
+`proxy.ts`/`apiRequest` saw every session as invalid immediately after a successful
+`loginByApi()`. Added a `fakeJwt(expiresInSeconds)` helper (unsigned `alg: 'none'`
+header + real `exp`/`iat` payload -- `decodeJWT` never verifies the signature, matching its
+own doc comment) and used it for both access and refresh tokens.
+
+**Third real bug found the same way:** `GET /api/items/:id` had no explicit handler, falling
+to the catch-all's `200 {}`. `LibraryItemClient.tsx` reads `libraryItem.media.metadata`
+directly (no optional chaining) -- `{}.media` is `undefined`, crashing with `Cannot read
+properties of undefined (reading 'metadata')` on the final "Open Book" navigation. Added a
+real minimal `BookMedia`/`BookMetadata`-shaped `GET /api/items/abs_e2e_item_1` handler.
+
+All three were found by instrumenting and re-running, not by reasoning in the abstract per the
+task's own guidance -- each theory was verified to actually resolve the observed symptom
+before moving to the next one.
+
+**Real green run** (`corepack pnpm exec cypress run --e2e --browser chrome --spec
+cypress/e2e/acquisition.cy.ts`):
+```
+acquisition web journey
+  √ completes search -> confirm -> acquire -> queue -> available -> Open Book (desktop) (11825ms)
+  √ completes search -> confirm -> acquire -> queue -> available -> Open Book (mobile) (10889ms)
+
+2 passing (23s)
+```
+Committed as `test: cover web acquisition journey` (87e88d58) -- `cypress.config.ts` (e2e
+project), `cypress/support/e2e.ts`, `cypress/e2e/acquisition.cy.ts`,
+`cypress/e2e/support/fakeAbsServer.mjs`, `cypress/fixtures/acquisition/{search,queue-available}.json`.
+
+**Gate 4 acceptance part 2** (lint/typecheck/find-hardcoded-strings, run individually per the
+task's own instruction -- ignore combined `pnpm check`'s unrelated PATH noise):
+`corepack pnpm lint` -> `eslint .` exit 0, no output. `corepack pnpm typecheck` -> `tsc
+--noEmit` exit 0, no output. `corepack pnpm find-hardcoded-strings` -> `find-hardcoded-strings
+— 0 findings in 0 files`. The "0 files" scope gap noted since t100 is STILL open (the script
+is scanning nothing, not confirming nothing needs a key) -- carried forward, not resolved
+this task; does not block Gate 4 per the task's literal acceptance wording, but Gate 5+ work
+that adds real UI strings should not treat a "0 findings" run as proof of coverage until this
+is root-caused.
+
+### Docker re-verify -- RUN for real this task (closes the gap carried since t300/t400)
+
+No existing compose target builds the bare production gateway image (`docker-compose.test.yml`
+in `deploy/acquisition/` is the gateway's own `vitest run test/e2e` integration harness, a
+different thing). Ran the direct build named in the task:
+```
+docker build -t acquisition-gateway-test -f services/acquisition-gateway/Dockerfile .
+...
+#22 exporting to image ... done
+real  0m53.752s
+```
+Image size: `docker images acquisition-gateway-test` -> **1.16GB** (unchanged from the t100
+Task-6 measurement -- still untrimmed, carried-forward non-blocking gap, not a regression).
+Smoke test: `docker run --rm acquisition-gateway-test node dist/main.js --help` (WORKDIR is
+already `/repo/services/acquisition-gateway` per the Dockerfile's final stage) ->
+`acquisition-gateway: reads its configuration from environment variables. See
+services/acquisition-gateway/src/config.ts.`, exit 0.
+
+## Gate 4: CLOSED -- all 6 tasks done, both acceptance parts verified real
+
+1. Cypress e2e journey passing at mobile AND desktop viewport widths: verified above, both
+   green.
+2. `corepack pnpm lint` / `typecheck` / `find-hardcoded-strings` all clean individually:
+   verified above.
 
 ## Exact next task
 
-**Gate 4 is partial.** Resume with Task 4 (acquisition queue) of
-`docs/handoff/plans/2026-08-24-react-web-acquisition-implementation-plan.md`, using the real API
-shapes and existing `AcquisitionContext`/`acquisitionClient` documented above. Install the Cypress
-binary first so test runs produce real evidence, not just typecheck/lint.
+Gate 4 is done. Next in the tracker sequence: t600 (Android vertical slice) and t1000
+(rollout prep), both already unblocked.
 
 ### Historical (t300 — already done)
 
