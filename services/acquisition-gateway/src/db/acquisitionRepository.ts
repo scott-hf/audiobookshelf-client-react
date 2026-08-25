@@ -265,4 +265,15 @@ export class AcquisitionRepository {
       .run(...TERMINAL_STATES, cutoffIso)
     return info.changes
   }
+
+  /** Every search_session_id any surviving acquisition (terminal or not) still holds a
+   * FOREIGN KEY on. Search-session cleanup must protect all of these, not just non-terminal
+   * ones -- a terminal row (e.g. `available`) outlives its search's TTL by design (history
+   * retention is measured in days, search TTL in minutes) and still references its session. */
+  listSearchSessionIds(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT search_session_id AS id FROM acquisitions').all() as {
+      id: string
+    }[]
+    return rows.map((r) => r.id)
+  }
 }

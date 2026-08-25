@@ -161,4 +161,38 @@ describe('Reconciler', () => {
     await h.reconciler.runOnce()
     expect(h.repo.findById('a1')?.state).toBe('processing')
   })
+
+  it('cleanup does not crash pruning an expired search session still FK-referenced by a terminal (in-retention) acquisition', async () => {
+    const db = openDatabase(':memory:')
+    const searchRepo = new SearchRepository(db)
+    searchRepo.create({
+      id: 's1',
+      absUserId: 'u1',
+      absLibraryId: 'lib1',
+      query: 'x',
+      resultsJson: '[]',
+      expiresAt: '2026-08-24T00:15:00.000Z', // long expired relative to `now` below
+      createdAt: '2026-08-24T00:00:00.000Z'
+    })
+    const repo = new AcquisitionRepository(db)
+    // Terminal (`available`) but well within history retention -- this is exactly the shape
+    // a real disposable-library-test acquisition takes hours after it completes.
+    repo.create(record({ state: 'available', updatedAt: '2026-08-24T00:10:00.000Z' }))
+    const reconciler = new Reconciler({
+      librarr: new LibrarrClient({
+        baseUrl: 'http://librarr:5050',
+        apiKey: 'k',
+        fetcher: (async () => new Response(JSON.stringify({ downloads: [] }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+      }),
+      repo,
+      searchRepo,
+      intervalMs: 60_000,
+      stallTimeoutSeconds: 1800,
+      historyRetentionSeconds: 604800, // 7 days -- the terminal row above is nowhere near this
+      now: () => Date.parse('2026-08-25T00:00:00.000Z')
+    })
+    await expect(reconciler.runOnce()).resolves.not.toThrow()
+    expect(searchRepo.findById('s1')).toBeDefined()
+    db.close()
+  })
 })

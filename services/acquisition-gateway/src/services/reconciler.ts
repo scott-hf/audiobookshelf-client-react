@@ -145,7 +145,12 @@ export class Reconciler {
     const cutoff = new Date(this.now() - retentionSeconds * 1000).toISOString()
     this.opts.repo.deleteTerminalOlderThan(cutoff)
     if (this.opts.searchRepo) {
-      const referenced = this.opts.repo.listNonTerminal().map((r) => r.searchSessionId)
+      // Must include terminal rows, not just listNonTerminal(): an `available`/`failed`
+      // acquisition still holds a FOREIGN KEY on its search_session_id until it ages out of
+      // history retention (days), long after the search session's own TTL (minutes) expires.
+      // Excluding terminal rows here let deleteExpiredExcept try to delete a still-referenced
+      // session and crash the whole process on SQLITE_CONSTRAINT_FOREIGNKEY.
+      const referenced = this.opts.repo.listSearchSessionIds()
       this.opts.searchRepo.deleteExpiredExcept(new Date(this.now()).toISOString(), referenced)
     }
   }
