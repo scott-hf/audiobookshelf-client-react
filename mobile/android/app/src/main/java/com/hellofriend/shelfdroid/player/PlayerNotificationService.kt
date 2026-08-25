@@ -8,11 +8,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaButtonReceiver
+import com.hellofriend.shelfdroid.managers.SleepTimerManager
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
@@ -59,6 +63,22 @@ class PlayerNotificationService : Service() {
 
     private var lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, 1f)
 
+    private val sleepTimerManager = SleepTimerManager()
+    private val sleepCheckHandler = Handler(Looper.getMainLooper())
+    private val sleepCheckRunnable = object : Runnable {
+        override fun run() {
+            if (sleepTimerManager.isRunning && sleepTimerManager.isExpired()) {
+                Log.d(tag, "Sleep timer expired, pausing")
+                pause()
+                sleepTimerManager.cancel()
+                return
+            }
+            if (sleepTimerManager.isRunning) {
+                sleepCheckHandler.postDelayed(this, 1_000)
+            }
+        }
+    }
+
     inner class LocalBinder : Binder() {
         fun getService(): PlayerNotificationService = this@PlayerNotificationService
     }
@@ -74,6 +94,14 @@ class PlayerNotificationService : Service() {
             }
             setSessionActivity(sessionActivityPendingIntent)
             setCallback(MediaSessionCallback(this@PlayerNotificationService))
+            setMediaButtonReceiver(
+                PendingIntent.getBroadcast(
+                    this@PlayerNotificationService,
+                    0,
+                    Intent(Intent.ACTION_MEDIA_BUTTON).setClass(this@PlayerNotificationService, MediaButtonReceiver::class.java),
+                    PendingIntent.FLAG_IMMUTABLE
+                )
+            )
             isActive = true
         }
 
@@ -193,13 +221,29 @@ class PlayerNotificationService : Service() {
     }
 
     fun setSleepTimer(seconds: Long?) {
-        // WI-1496 t700 Task 3 ports the donor's SleepTimerManager; this milestone only wires the
-        // plugin call through so the TS contract is satisfiable without inventing a timer.
-        Log.d(tag, "setSleepTimer($seconds) is a stub pending Task 3's SleepTimerManager port")
+        sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
+        if (seconds == null) {
+            sleepTimerManager.cancel()
+            return
+        }
+        sleepTimerManager.start(seconds)
+        sleepCheckHandler.postDelayed(sleepCheckRunnable, 1_000)
+    }
+
+    /** Track-level skip (multi-track sessions only) -- chapter navigation is out of scope until
+     * the [PlaybackSession] contract carries chapter data. */
+    fun skipToNext() {
+        if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+    }
+
+    fun skipToPrevious() {
+        if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem()
     }
 
     @Suppress("DEPRECATION")
     fun stop() {
+        sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
+        sleepTimerManager.cancel()
         player.stop()
         currentSession = null
         lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, lastSnapshot.rate)
@@ -242,6 +286,7 @@ class PlayerNotificationService : Service() {
     }
 
     override fun onDestroy() {
+        sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
         if (::player.isInitialized) player.release()
         if (::mediaSession.isInitialized) mediaSession.release()
         super.onDestroy()

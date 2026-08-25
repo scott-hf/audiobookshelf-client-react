@@ -1,48 +1,185 @@
 import { App as CapacitorApp } from '@capacitor/app'
-import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
+import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthProvider'
+import AbsAudioPlayerNative from '../native/absAudioPlayerPlugin'
 import { HtmlAudioPlayer } from './htmlAudioPlayer'
-import { INITIAL_PLAYER_STATE, PlayerState } from './playerTypes'
+import { createNativeAudioPlayer } from './nativeAudioPlayer'
+import { createNativeProgressSync, NativeProgressSync } from './nativeProgressSync'
+import { INITIAL_PLAYER_STATE, PlayerSnapshot, PlayerState } from './playerTypes'
+
+const DEVICE_ID = 'shelfdroid-android'
+const DEFAULT_JUMP_FORWARD_SECONDS = 30
+const DEFAULT_JUMP_BACKWARD_SECONDS = 10
 
 export interface PlayerContextValue {
   state: PlayerState
+  /** Live playback rate; only the native player actually varies it (HtmlAudioPlayer's
+   * <audio>.playbackRate is not wired up in the milestone-one web path). Exposed regardless
+   * of platform so PlayerPage doesn't need to branch on `Capacitor.isNativePlatform()` itself. */
+  rate: number
   play: (itemId: string) => Promise<void>
   pause: () => void
   resume: () => Promise<void>
   seek: (time: number) => void
   close: () => Promise<void>
+  /** No-ops on the web/dev-preview path (HtmlAudioPlayer doesn't implement them yet) -- see the
+   * Task 1 contract note on the divergence between HtmlAudioPlayer and the native adapter. */
+  setRate: (rate: number) => void
+  jumpForward: (seconds?: number) => void
+  jumpBackward: (seconds?: number) => void
+  setSleepTimer: (seconds: number | null) => void
 }
 
 export const PlayerContext = createContext<PlayerContextValue | null>(null)
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const { client } = useAuth()
-  const player = useMemo(() => new HtmlAudioPlayer({ api: client }), [client])
-  const [state, setState] = useState<PlayerState>(INITIAL_PLAYER_STATE)
+  const isNative = useMemo(() => Capacitor.isNativePlatform(), [])
 
-  useEffect(() => player.subscribe(setState), [player])
+  const htmlPlayer = useMemo(() => (isNative ? null : new HtmlAudioPlayer({ api: client })), [client, isNative])
+  const nativePlayer = useMemo(() => (isNative ? createNativeAudioPlayer(AbsAudioPlayerNative) : null), [isNative])
+
+  const [state, setState] = useState<PlayerState>(INITIAL_PLAYER_STATE)
+  const [rate, setRateState] = useState(1)
+
+  const progressSyncRef = useRef<NativeProgressSync | null>(null)
+  const itemIdRef = useRef<string | null>(null)
+
+  // Web path: HtmlAudioPlayer owns its own PlayerState and sync timer -- just relay it.
+  useEffect(() => {
+    if (!htmlPlayer) return
+    return htmlPlayer.subscribe(setState)
+  }, [htmlPlayer])
+
+  // Native path: the native side only reports position/play-state snapshots (per the Task 1
+  // contract note) -- React owns ABS session start/sync/close via nativeProgressSync.
+  useEffect(() => {
+    if (!nativePlayer) return
+    return nativePlayer.subscribe((snapshot: PlayerSnapshot) => {
+      setState({
+        status: snapshot.status,
+        itemId: itemIdRef.current,
+        currentTime: snapshot.currentTime,
+        duration: snapshot.duration,
+        error: snapshot.error
+      })
+      setRateState(snapshot.rate)
+      progressSyncRef.current?.observe(snapshot)
+    })
+  }, [nativePlayer])
 
   useEffect(() => {
     // Close (not just pause) on app background per the vertical-slice spec -- the sync
     // timer cannot run while backgrounded, so we report final progress immediately instead.
     const listenerHandle = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-      if (!isActive) void player.close()
+      if (!isActive) void close()
     })
     return () => {
       void listenerHandle.then((handle) => handle.remove())
     }
-  }, [player])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function closeNative(): Promise<void> {
+    if (!nativePlayer) return
+    await nativePlayer.stop()
+    if (progressSyncRef.current) {
+      await progressSyncRef.current.close()
+      progressSyncRef.current = null
+    }
+    itemIdRef.current = null
+    setState({ ...INITIAL_PLAYER_STATE })
+  }
+
+  async function play(itemId: string): Promise<void> {
+    if (nativePlayer) {
+      await closeNative()
+      itemIdRef.current = itemId
+      setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
+      try {
+        const session = await client.startSession(itemId, {
+          deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
+          supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
+          mediaPlayer: 'exo',
+          forceTranscode: false,
+          forceDirectPlay: false
+        })
+        const accessToken = client.getAccessToken()
+        const serverUrl = client.getServerUrl()
+        if (!accessToken || !serverUrl) throw new Error('Not authenticated')
+
+        progressSyncRef.current = createNativeProgressSync(client, session.id)
+        await nativePlayer.load({ session, accessToken, serverUrl })
+        await nativePlayer.play()
+      } catch (error) {
+        setState({ status: 'error', itemId, currentTime: 0, duration: 0, error: error instanceof Error ? error.message : 'Playback failed' })
+        throw error
+      }
+      return
+    }
+    await htmlPlayer?.play(itemId)
+  }
+
+  function pause(): void {
+    if (nativePlayer) {
+      void nativePlayer.pause()
+      return
+    }
+    htmlPlayer?.pause()
+  }
+
+  async function resume(): Promise<void> {
+    if (nativePlayer) {
+      await nativePlayer.play()
+      return
+    }
+    await htmlPlayer?.resume()
+  }
+
+  function seek(time: number): void {
+    if (nativePlayer) {
+      void nativePlayer.seek(time)
+      return
+    }
+    htmlPlayer?.seek(time)
+  }
+
+  async function close(): Promise<void> {
+    if (nativePlayer) {
+      await closeNative()
+      return
+    }
+    await htmlPlayer?.close()
+  }
+
+  function setRate(nextRate: number): void {
+    if (nativePlayer) {
+      void nativePlayer.setRate(nextRate)
+      setRateState(nextRate)
+    }
+    // HtmlAudioPlayer doesn't implement rate control yet -- no-op on web.
+  }
+
+  function jumpForward(seconds = DEFAULT_JUMP_FORWARD_SECONDS): void {
+    seek(state.currentTime + seconds)
+  }
+
+  function jumpBackward(seconds = DEFAULT_JUMP_BACKWARD_SECONDS): void {
+    seek(Math.max(0, state.currentTime - seconds))
+  }
+
+  function setSleepTimer(seconds: number | null): void {
+    if (nativePlayer) {
+      void nativePlayer.setSleepTimer(seconds)
+    }
+    // No sleep timer support on the web/dev-preview path.
+  }
 
   const value = useMemo<PlayerContextValue>(
-    () => ({
-      state,
-      play: (itemId: string) => player.play(itemId),
-      pause: () => player.pause(),
-      resume: () => player.resume(),
-      seek: (time: number) => player.seek(time),
-      close: () => player.close()
-    }),
-    [state, player]
+    () => ({ state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state, rate, htmlPlayer, nativePlayer, client]
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

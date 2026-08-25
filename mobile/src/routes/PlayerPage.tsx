@@ -9,9 +9,11 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`
 }
 
+const PLAYBACK_RATES = [1, 1.25, 1.5, 2]
+
 export default function PlayerPage() {
   const { itemId } = useParams<{ itemId: string }>()
-  const { state, play, pause, resume, seek, close } = usePlayer()
+  const { state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
 
   useEffect(() => {
     if (itemId && state.itemId !== itemId) {
@@ -43,6 +45,9 @@ export default function PlayerPage() {
         {formatTime(state.currentTime)} / {formatTime(state.duration)}
       </p>
       <div className="player-controls">
+        <button type="button" onClick={() => jumpBackward()} aria-label="Jump backward">
+          -10s
+        </button>
         {state.status === 'playing' ? (
           <button type="button" onClick={pause}>
             Pause
@@ -52,6 +57,27 @@ export default function PlayerPage() {
             Play
           </button>
         )}
+        <button type="button" onClick={() => jumpForward()} aria-label="Jump forward">
+          +30s
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const currentIndex = PLAYBACK_RATES.indexOf(rate)
+            const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]
+            setRate(next)
+          }}
+        >
+          {rate}x
+        </button>
+      </div>
+      <div className="player-sleep-timer">
+        <button type="button" onClick={() => setSleepTimer(30 * 60)}>
+          Sleep 30m
+        </button>
+        <button type="button" onClick={() => setSleepTimer(null)}>
+          Cancel sleep
+        </button>
       </div>
       {state.error && <p role="alert">{state.error}</p>}
     </div>

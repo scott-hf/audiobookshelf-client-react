@@ -39,6 +39,14 @@ class MediaSessionCallback(private val service: PlayerNotificationService) : Med
         service.jumpBackward()
     }
 
+    override fun onSkipToNext() {
+        service.skipToNext()
+    }
+
+    override fun onSkipToPrevious() {
+        service.skipToPrevious()
+    }
+
     override fun onCustomAction(action: String?, extras: Bundle?) {
         when (action) {
             CUSTOM_ACTION_JUMP_FORWARD -> service.jumpForward()

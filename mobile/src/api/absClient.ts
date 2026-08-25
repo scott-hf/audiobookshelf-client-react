@@ -97,7 +97,13 @@ export function createAbsClient(deps: AbsClientDeps) {
       const accessToken = session.getAccessToken()
       const separator = contentUrl.includes('?') ? '&' : '?'
       return `${serverUrl ?? ''}${contentUrl}${separator}token=${encodeURIComponent(accessToken ?? '')}`
-    }
+    },
+
+    /** Passthroughs for callers that need the raw credentials directly rather than an
+     * authenticated fetch -- the native player (WI-1496 t700 Task 3) makes its own ExoPlayer
+     * HTTP requests outside this client and needs to hand them to the Capacitor plugin. */
+    getServerUrl: (): string | null => session.getServerUrl(),
+    getAccessToken: (): string | null => session.getAccessToken()
   }
 }
 

@@ -1,4 +1,4 @@
-import type { PluginListenerHandle } from '@capacitor/core'
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 import type { AbsPlaybackSession } from '../types/abs'
 import type { NativePlayerState, PlayerSnapshot } from '../player/playerTypes'
 
@@ -28,3 +28,12 @@ export interface AbsAudioPlayerPlugin {
   getState(): Promise<PlayerSnapshot>
   addListener(event: 'playerState', listener: (state: NativePlayerState) => void): Promise<PluginListenerHandle>
 }
+
+/** Native bridge to android/app/.../plugins/AbsAudioPlayer.kt. No web implementation is
+ * registered -- there is no native player outside the Android app, matching
+ * native/secureSession.ts's pattern for SecureSessionPlugin. `PlayerProvider` only constructs
+ * an adapter around this when `Capacitor.isNativePlatform()` is true, so web/dev-preview never
+ * calls it. */
+const AbsAudioPlayerNative = registerPlugin<AbsAudioPlayerPlugin>('AbsAudioPlayer')
+
+export default AbsAudioPlayerNative
