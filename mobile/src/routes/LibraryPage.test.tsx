@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { withClientDefaults } from '../test/absClientMock'
 import { DownloadProvider } from '../downloads/DownloadProvider'
 import type { AbsLibrary, AbsLibraryItem } from '../types/abs'
 import BookDetailsPage from './BookDetailsPage'
@@ -42,7 +43,7 @@ function book(overrides: Partial<AbsLibraryItem> & { id: string; title: string }
 function renderMobile(initialPath: string, client: Partial<AbsClient>) {
   const authValue: AuthContextValue = {
     state: { status: 'authenticated', serverUrl: 'https://books.test' },
-    client: client as AbsClient,
+    client: withClientDefaults(client),
     acquisitionClient: null,
     login: vi.fn(),
     logout: vi.fn()

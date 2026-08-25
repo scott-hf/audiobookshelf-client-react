@@ -1,0 +1,118 @@
+'use client'
+
+import { useShiftClickTextSelectionGuard } from '@/hooks/useShiftClickTextSelectionGuard'
+import { mergeClasses } from '@/lib/merge-classes'
+import React, { useId, useRef } from 'react'
+import InputWrapper from './InputWrapper'
+
+interface CheckboxProps {
+  value?: boolean
+  label?: string
+  size?: 'small' | 'medium' | 'large'
+  checkboxBgClass?: string
+  borderColorClass?: string
+  checkColorClass?: string
+  labelClass?: string
+  disabled?: boolean
+  partial?: boolean
+  ariaLabel?: string
+  onChange?: (value: boolean, shiftKey: boolean) => void
+  className?: string
+}
+
+export default function Checkbox({
+  value = false,
+  label,
+  size = 'medium',
+  checkboxBgClass = 'bg-bg',
+  borderColorClass = 'border-foreground-subdued',
+  checkColorClass = 'text-green-500',
+  labelClass = '',
+  disabled = false,
+  partial = false,
+  ariaLabel = '',
+  onChange,
+  className = ''
+}: CheckboxProps) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const shiftKeyRef = useRef(false)
+  const { onPointerDown: guardPointerDown } = useShiftClickTextSelectionGuard({ enabled: true })
+
+  const checkboxId = useId()
+
+  const sizeClass = size === 'small' ? 'w-4 h-4' : size === 'medium' ? 'w-5 h-5' : 'w-6 h-6'
+  const checkboxWrapperClassName = mergeClasses(
+    'rounded-sm flex shrink-0 justify-center items-center border',
+    checkboxBgClass,
+    disabled ? 'border-checkbox-bg-disabled' : borderColorClass,
+    sizeClass
+  )
+
+  const labelSizeClass = size === 'small' ? 'text-xs md:text-sm ps-1' : size === 'medium' ? 'text-sm md:text-base ps-2' : 'text-base md:text-lg ps-2'
+  const checkboxLabelClassName = mergeClasses(labelSizeClass, disabled ? 'cursor-not-allowed text-disabled' : 'cursor-pointer text-foreground', labelClass)
+
+  const svgSizeClass = size === 'small' ? 'w-3 h-3' : size === 'medium' ? 'w-3.5 h-3.5' : 'w-4 h-4'
+  const svgClass = mergeClasses('pointer-events-none', disabled ? 'fill-checkbox-disabled' : 'fill-current', checkColorClass, svgSizeClass)
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    shiftKeyRef.current = e.shiftKey
+    guardPointerDown?.(e)
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!disabled) {
+      onChange?.(e.target.checked, shiftKeyRef.current)
+      shiftKeyRef.current = false
+    }
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    shiftKeyRef.current = e.shiftKey
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (!disabled) {
+        inputRef.current?.click()
+      }
+    }
+  }
+
+  return (
+    <InputWrapper disabled={disabled} borderless size={size} className={mergeClasses('bg-transparent', className)} inputRef={inputRef}>
+      <div cy-id="checkbox-and-label-wrapper" className="flex items-center justify-start px-1 py-1" onPointerDown={handlePointerDown}>
+        <div cy-id="checkbox-wrapper" className={checkboxWrapperClassName}>
+          <div
+            cy-id="checkbox-div"
+            className={mergeClasses('flex h-full w-full items-center justify-center rounded-sm', disabled ? 'bg-checkbox-bg-disabled' : '')}
+          >
+            {partial ? (
+              <span className="material-symbols text-base leading-none text-gray-400">remove</span>
+            ) : value ? (
+              <svg className={svgClass} viewBox="0 0 20 20">
+                <path d="M0 11l2-2 5 5L18 3l2 2L7 18z" />
+              </svg>
+            ) : null}
+          </div>
+        </div>
+        {label && (
+          <label htmlFor={checkboxId} cy-id="checkbox-label" className={checkboxLabelClassName}>
+            {label}
+          </label>
+        )}
+        {/* Input is last in DOM so it sits on top of the visual elements in stacking order.
+            Clicks land directly on the native input, so the browser's :focus-visible
+            heuristic works correctly — no outline on mouse click, outline on keyboard focus. */}
+        <input
+          ref={inputRef}
+          id={checkboxId}
+          type="checkbox"
+          checked={value}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          onChange={handleChange}
+          onKeyDown={handleInputKeyDown}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:pointer-events-none disabled:cursor-not-allowed"
+        />
+      </div>
+    </InputWrapper>
+  )
+}

@@ -66,6 +66,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const progressSyncRef = useRef<NativeProgressSync | null>(null)
   const itemIdRef = useRef<string | null>(null)
+  /**
+   * Incremented by every `play()` and `close()` so an in-flight native `play()` can detect that
+   * it has been superseded and hand back whatever it already acquired.
+   *
+   * Same race `HtmlAudioPlayer.playGeneration` guards (see htmlAudioPlayer.ts): two overlapping
+   * `play()` calls each `await client.startSession(...)`, then each overwrite
+   * `progressSyncRef.current`. Unlike the web path there is only one ExoPlayer, so audio does
+   * not double up -- but the first ABS session is dropped without ever being synced or closed,
+   * leaking an open session on the server.
+   */
+  const playGenerationRef = useRef(0)
   // WI-1496 t900 Task 3: the currently-loaded stream's Cast-load source, kept in lockstep with
   // whatever was last handed to `nativePlayer.load()` (stream or offline) -- `castHandoff`'s
   // `connectCast()` reads this instead of re-resolving a session, preserving the ONE ABS
@@ -136,6 +147,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [nativePlayer])
 
   async function closeNative(): Promise<void> {
+    // Supersede any in-flight play() so it releases its own session instead of installing it
+    // after we have already cleaned up.
+    playGenerationRef.current++
+    await teardownNative()
+  }
+
+  /** Releases the native player and the current ABS session. Does not touch `playGenerationRef`
+   * -- callers decide whether they are superseding an in-flight play(). */
+  async function teardownNative(): Promise<void> {
     if (!nativePlayer) return
     await nativePlayer.stop()
     if (progressSyncRef.current) {
@@ -154,10 +174,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
    * playback) is not fatal: playback proceeds unsynced, using the item id itself as a stable
    * session identifier for the player's own state, and progress simply doesn't sync until the
    * next time this item is opened with the server reachable. */
-  async function loadOfflineTracks(itemId: string, tracks: LocalTrack[]): Promise<void> {
-    if (!nativePlayer) return
-    let sessionId = itemId
-
+  async function startOfflineSession(itemId: string): Promise<{ sessionId: string; sync: NativeProgressSync | null }> {
     try {
       const session = await client.startSession(itemId, {
         deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
@@ -166,12 +183,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         forceTranscode: false,
         forceDirectPlay: false
       })
-      sessionId = session.id
-      progressSyncRef.current = createNativeProgressSync(client, session.id)
+      // Returned rather than assigned to progressSyncRef so the caller can drop it (closing the
+      // session) if this play() attempt was superseded while the request was in flight.
+      return { sessionId: session.id, sync: createNativeProgressSync(client, session.id) }
     } catch {
       // No network / server unreachable -- expected for offline playback. Play unsynced.
+      return { sessionId: itemId, sync: null }
     }
+  }
 
+  async function loadOfflineTracks(sessionId: string, tracks: LocalTrack[]): Promise<void> {
+    if (!nativePlayer) return
     await nativePlayer.load({
       session: { id: sessionId, currentTime: 0, audioTracks: tracks.map((track) => ({ index: track.index, contentUrl: track.contentUrl, duration: track.duration })) },
       accessToken: client.getAccessToken() ?? '',
@@ -181,12 +203,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   async function play(itemId: string): Promise<void> {
     if (nativePlayer) {
-      await closeNative()
+      // Claim this generation first so any already-running play() sees itself superseded.
+      const generation = ++playGenerationRef.current
+      await teardownNative()
+      if (generation !== playGenerationRef.current) return
+
       itemIdRef.current = itemId
       setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
 
       const local = localItems.find((entry) => entry.libraryItemId === itemId)
       const source = selectPlaybackSource({ id: itemId }, parseLocalManifest(local))
+
+      /**
+       * Superseded mid-flight: hand our ABS session back so it is not left open forever.
+       *
+       * Deliberately does NOT touch the native player. There is only one ExoPlayer and the
+       * play() that superseded us already owns it (its teardownNative() stopped it, and it is
+       * about to load its own content) -- stopping it here would kill the newer playback.
+       * The close is best-effort: if the newer teardown already closed this session the server
+       * rejects the second attempt, which is harmless and must not surface as a playback error.
+       */
+      const abandon = async (sync: NativeProgressSync | null): Promise<void> => {
+        if (!sync) return
+        try {
+          await sync.close()
+        } catch {
+          // Already closed by the superseding teardown -- nothing left to release.
+        }
+      }
 
       try {
         if (source.kind === 'offline') {
@@ -195,7 +239,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           // for offline playback until a local HTTP relay exists. Left null rather than handed
           // to `cast.load()` with a URI the receiver could never fetch.
           castSourceRef.current = null
-          await loadOfflineTracks(itemId, source.tracks)
+
+          const { sessionId, sync } = await startOfflineSession(itemId)
+          if (generation !== playGenerationRef.current) return await abandon(sync)
+
+          await loadOfflineTracks(sessionId, source.tracks)
+          if (generation !== playGenerationRef.current) return await abandon(sync)
+
+          progressSyncRef.current = sync
           await nativePlayer.play()
           return
         }
@@ -207,12 +258,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           forceTranscode: false,
           forceDirectPlay: false
         })
+        const sync = createNativeProgressSync(client, session.id)
+        if (generation !== playGenerationRef.current) return await abandon(sync)
+
         const accessToken = client.getAccessToken()
         const serverUrl = client.getServerUrl()
         if (!accessToken || !serverUrl) throw new Error('Not authenticated')
 
-        progressSyncRef.current = createNativeProgressSync(client, session.id)
+        progressSyncRef.current = sync
         await nativePlayer.load({ session, accessToken, serverUrl })
+        if (generation !== playGenerationRef.current) return await abandon(sync)
+
         // WI-1496 t900 Task 3: only the first track's URL is castable -- multi-track (chaptered)
         // sessions would need a Cast queue to hand off every track, out of this task's scope
         // (see report GAPS). Single-track sessions (the common case) hand off correctly.
@@ -227,6 +283,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           : null
         await nativePlayer.play()
       } catch (error) {
+        // A superseded attempt must not clobber the newer attempt's state or surface its failure.
+        if (generation !== playGenerationRef.current) return
         setState({ status: 'error', itemId, currentTime: 0, duration: 0, error: error instanceof Error ? error.message : 'Playback failed' })
         throw error
       }

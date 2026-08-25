@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthProvider'
 import AcquisitionRow from '../components/AcquisitionRow'
 import ConfirmDialog from '../components/ConfirmDialog'
 import LoadingView from '../components/LoadingView'
+import PageMessage from '../components/ui/PageMessage'
 import { useAcquisition } from '../contexts/AcquisitionContext'
 
 /** Minimal shape this page needs -- mirrors DiscoverPage's DiscoverApi pattern so tests can
@@ -67,19 +68,19 @@ export default function AcquisitionQueuePage() {
   }
 
   return (
-    <div className="acquisition-queue-page">
-      <h1>Acquisition Queue</h1>
+    <div>
+      <h1 className="text-foreground mb-3 text-lg font-semibold">Acquisition Queue</h1>
 
       {error && (
-        <p role="alert" className="discover-error">
+        <p role="alert" className="text-error mb-3 text-sm">
           {error}
         </p>
       )}
 
       {queue.length === 0 ? (
-        <p>Nothing queued yet.</p>
+        <PageMessage message="Nothing queued yet." description="Releases you acquire from Discover show up here." />
       ) : (
-        <div className="acquisition-queue-list" data-testid="acquisition-queue">
+        <div className="flex flex-col gap-2" data-testid="acquisition-queue">
           {queue.map((acquisition) => (
             <AcquisitionRow
               key={acquisition.id}
@@ -98,7 +99,7 @@ export default function AcquisitionQueuePage() {
         isOpen={!!pendingCancel}
         message="Cancel this acquisition?"
         confirmLabel="Yes, cancel"
-        confirmClassName="confirm-dialog-confirm confirm-dialog-danger"
+        confirmColor="bg-error"
         processing={!!cancellingId}
         onClose={() => setPendingCancel(null)}
         onConfirm={() => void handleConfirmCancel()}

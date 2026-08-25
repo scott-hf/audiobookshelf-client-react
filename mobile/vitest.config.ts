@@ -1,8 +1,10 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+import { sharedAliases } from './aliases'
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { alias: sharedAliases },
   // Prevent vite from walking up to the root Next.js app's postcss.config.mjs
   // (Tailwind v4 plugin object, incompatible with vite's default postcss loader).
   css: { postcss: { plugins: [] } },

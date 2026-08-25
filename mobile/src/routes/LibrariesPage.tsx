@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import LoadingView from '../components/LoadingView'
+import PageMessage from '../components/ui/PageMessage'
 import type { AbsLibrary } from '../types/abs'
 
 export default function LibrariesPage() {
@@ -25,19 +26,35 @@ export default function LibrariesPage() {
     }
   }, [client])
 
-  if (error) return <p role="alert">{error}</p>
+  if (error)
+    return (
+      <p role="alert" className="text-error py-10 text-center">
+        {error}
+      </p>
+    )
   if (!libraries) return <LoadingView label="Loading libraries…" />
-  if (libraries.length === 0) return <p>No book libraries available.</p>
+  if (libraries.length === 0) return <PageMessage message="No book libraries available." description="Add a book library on your Audiobookshelf server to see it here." />
 
   return (
-    <ul className="library-list">
-      {libraries.map((library) => (
-        <li key={library.id}>
-          <button type="button" className="library-list-item" onClick={() => navigate(`/library/${encodeURIComponent(library.id)}`)}>
-            {library.name}
-          </button>
-        </li>
-      ))}
-    </ul>
+    <>
+      <h2 className="text-foreground-muted mb-3 text-xs font-semibold tracking-widest uppercase">Libraries</h2>
+      <ul className="flex flex-col gap-2">
+        {libraries.map((library) => (
+          <li key={library.id}>
+            <button
+              type="button"
+              className="bg-primary border-border hover:bg-bg-hover focus-visible:outline-foreground-muted flex w-full items-center gap-3 rounded-md border px-4 py-3 text-start transition-colors focus-visible:outline-1"
+              onClick={() => navigate(`/library/${encodeURIComponent(library.id)}`)}
+            >
+              <span className="abs-icons icon-books-1 text-accent text-xl" aria-hidden="true" />
+              <span className="text-foreground flex-1 font-semibold">{library.name}</span>
+              <span className="material-symbols text-foreground-subdued text-xl" aria-hidden="true">
+                chevron_right
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }

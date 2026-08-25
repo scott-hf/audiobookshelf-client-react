@@ -6,6 +6,9 @@ import { useAuth } from '../auth/AuthProvider'
 import ConfirmDialog from '../components/ConfirmDialog'
 import LoadingView from '../components/LoadingView'
 import ReleaseCard from '../components/ReleaseCard'
+import Btn from '../components/ui/Btn'
+import PageMessage from '../components/ui/PageMessage'
+import TextInput from '../components/ui/TextInput'
 import { useAcquisition } from '../contexts/AcquisitionContext'
 
 /** Minimal shape this page needs -- lets tests inject a fake implementation via AuthContext
@@ -66,34 +69,45 @@ export default function DiscoverPage() {
   }
 
   return (
-    <div className="discover-page">
-      <h1>Discover</h1>
+    <div>
+      <h1 className="text-foreground mb-3 text-lg font-semibold">Discover</h1>
 
       <form
-        className="discover-search"
+        className="mb-4 flex items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault()
           void handleSearch()
         }}
       >
-        <input type="search" aria-label="Search audiobooks" placeholder="Search audiobooks" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <button type="submit" disabled={!query.trim() || searching}>
-          {searching ? 'Searching…' : 'Search'}
-        </button>
+        <TextInput
+          type="search"
+          size="small"
+          label="Search audiobooks"
+          placeholder="Search audiobooks"
+          value={query}
+          onChange={setQuery}
+          enterKeyHint="search"
+          className="min-w-0 flex-1"
+          clearable
+          onClear={() => setQuery('')}
+        />
+        <Btn size="small" type="submit" color="bg-accent" disabled={!query.trim() || searching} loading={searching} className="shrink-0 justify-center">
+          Search
+        </Btn>
       </form>
 
       {error && (
-        <p role="alert" className="discover-error">
+        <p role="alert" className="text-error mb-3 text-sm">
           {error}
         </p>
       )}
 
       {searching && <LoadingView label="Searching…" />}
 
-      {!searching && searchResult && searchResult.results.length === 0 && <p>No releases found.</p>}
+      {!searching && searchResult && searchResult.results.length === 0 && <PageMessage message="No releases found." description="Try a different title or author." />}
 
       {!searching && searchResult && searchResult.results.length > 0 && (
-        <div className="discover-results" data-testid="discover-results">
+        <div className="flex flex-col gap-2" data-testid="discover-results">
           {searchResult.results.map((release) => (
             <ReleaseCard key={release.releaseId} release={release} onAcquire={setSelected} submitting={submitting && selected?.releaseId === release.releaseId} />
           ))}

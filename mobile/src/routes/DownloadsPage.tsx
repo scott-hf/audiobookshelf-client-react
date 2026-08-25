@@ -1,5 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import DownloadRow from '../components/DownloadRow'
+import Btn from '../components/ui/Btn'
+import PageMessage from '../components/ui/PageMessage'
 import { useDownloads } from '../downloads/DownloadProvider'
 
 /** Best-effort title from a persisted manifest -- falls back to the raw id if the manifest JSON
@@ -22,24 +24,27 @@ export default function DownloadsPage() {
   // `PlayerPage` itself starts playback on mount (see routes/PlayerPage.tsx's effect) -- it
   // resolves offline vs stream via `PlayerProvider`'s own `localItems` lookup, so this only needs
   // to land on the player route with the right itemId, matching BookDetailsPage's plain "Play"
-  // Link pattern instead of duplicating the `play()` call here.
+  // navigation pattern instead of duplicating the `play()` call here.
   const handlePlayOffline = (libraryItemId: string) => {
     navigate(`/downloads/${encodeURIComponent(libraryItemId)}/play`)
   }
 
   return (
-    <div className="downloads-page">
-      <h1>Downloads</h1>
-      <p className="downloads-page-policy" data-testid="downloads-storage-policy">
+    <div>
+      <h1 className="text-foreground text-lg font-semibold">Downloads</h1>
+      <p className="text-foreground-subdued mt-1 mb-4 flex items-center gap-1 text-xs" data-testid="downloads-storage-policy">
+        <span className="material-symbols text-sm" aria-hidden="true">
+          wifi
+        </span>
         Downloads use Wi-Fi only
       </p>
 
-      <section>
-        <h2>In progress</h2>
+      <section className="mb-6">
+        <h2 className="text-foreground-muted mb-2 text-xs font-semibold tracking-widest uppercase">In progress</h2>
         {activeQueue.length === 0 ? (
-          <p>Nothing downloading right now.</p>
+          <p className="text-foreground-subdued text-sm">Nothing downloading right now.</p>
         ) : (
-          <div className="downloads-queue-list" data-testid="downloads-queue">
+          <div className="flex flex-col gap-2" data-testid="downloads-queue">
             {activeQueue.map((entry) => (
               <DownloadRow key={entry.id} download={entry} onPause={(id) => void pause(id)} onResume={(id) => void resume(id)} onCancel={(id) => void cancel(id)} />
             ))}
@@ -48,17 +53,20 @@ export default function DownloadsPage() {
       </section>
 
       <section>
-        <h2>Offline library</h2>
+        <h2 className="text-foreground-muted mb-2 text-xs font-semibold tracking-widest uppercase">Offline library</h2>
         {localItems.length === 0 ? (
-          <p>Nothing downloaded yet.</p>
+          <PageMessage message="Nothing downloaded yet." description="Downloaded books stay playable without a connection." />
         ) : (
-          <div className="downloads-local-list" data-testid="downloads-local-items">
+          <div className="flex flex-col gap-2" data-testid="downloads-local-items">
             {localItems.map((item) => (
-              <div key={item.libraryItemId} className="download-local-row" data-testid="download-local-row">
-                <p className="download-local-title">{manifestTitle(item.manifestJson, item.libraryItemId)}</p>
-                <button type="button" className="download-row-button" onClick={() => handlePlayOffline(item.libraryItemId)}>
+              <div key={item.libraryItemId} className="bg-primary border-border flex items-center gap-3 rounded-md border p-3" data-testid="download-local-row">
+                <span className="material-symbols text-accent text-xl" aria-hidden="true">
+                  download_done
+                </span>
+                <p className="text-foreground min-w-0 flex-1 truncate text-sm font-semibold">{manifestTitle(item.manifestJson, item.libraryItemId)}</p>
+                <Btn size="small" color="bg-accent" onClick={() => handlePlayOffline(item.libraryItemId)} className="justify-center">
                   Play offline
-                </button>
+                </Btn>
               </div>
             ))}
           </div>

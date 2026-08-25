@@ -1,0 +1,288 @@
+'use client'
+
+import { useMergedRef } from '@/hooks/useMergedRef'
+import { useTypeSafeTranslations } from '@/hooks/useTypeSafeTranslations'
+import { copyToClipboard } from '@/lib/clipboard'
+import { mergeClasses } from '@/lib/merge-classes'
+import { useId, useState } from 'react'
+import InputWrapper from './InputWrapper'
+import Label from './Label'
+
+export interface TextInputProps {
+  id?: string
+  name?: string
+  label?: string
+  value?: string | number
+  placeholder?: string
+  readOnly?: boolean
+  type?: string
+  disabled?: boolean
+  clearable?: boolean
+  showCopy?: boolean
+  step?: string | number
+  min?: string | number
+  customInputClass?: string
+  wrapperClassName?: string
+  size?: 'small' | 'medium' | 'large' | 'auto'
+  clearButtonClassName?: string
+  enterKeyHint?: 'enter' | 'done' | 'go' | 'next' | 'previous' | 'search' | 'send'
+  onChange?: (value: string) => void
+  onClear?: () => void
+  onFocus?: () => void
+  onBlur?: () => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  className?: string
+  ref?: React.Ref<HTMLInputElement>
+  error?: boolean | string
+  autocomplete?: 'off' | 'username' | 'current-password' | 'new-password' | 'email' | 'tel' | string
+  /** Trim leading/trailing whitespace on blur (Vue `trim-whitespace` parity). */
+  trimWhitespace?: boolean
+}
+
+export default function TextInput({
+  id,
+  name,
+  label,
+  value,
+  placeholder,
+  readOnly = false,
+  type = 'text',
+  disabled = false,
+  clearable = false,
+  showCopy = false,
+  step,
+  min,
+  customInputClass,
+  wrapperClassName,
+  size = 'medium',
+  clearButtonClassName,
+  enterKeyHint,
+  onChange,
+  onClear,
+  onFocus,
+  onBlur,
+  onKeyDown,
+  className,
+  ref,
+  error,
+  autocomplete = 'off',
+  trimWhitespace = false
+}: TextInputProps) {
+  const t = useTypeSafeTranslations()
+  const generatedId = useId()
+  const textInputId = id || generatedId
+  const inputId = `${textInputId}-input`
+
+  const [readInputRef, writeInputRef] = useMergedRef<HTMLInputElement>(ref)
+
+  const [showPassword, setShowPassword] = useState(false)
+  const [hasCopied, setHasCopied] = useState<boolean | null>(null)
+  const [isInvalidDate, setIsInvalidDate] = useState(false)
+
+  const actualType = type === 'password' && showPassword ? 'text' : type
+  const ariaLabel = label || placeholder || undefined
+  const ariaInvalid = isInvalidDate
+
+  const isDatetimeLocal = type === 'datetime-local'
+
+  const inputClass = mergeClasses(
+    'w-full bg-transparent outline-none border-none h-full',
+    'disabled:cursor-not-allowed disabled:text-disabled read-only:text-read-only',
+    // type="search" adds a native clear control in Blink/WebKit; hide it because we show our own
+    actualType === 'search' &&
+      '[&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden [&::-webkit-search-results-button]:hidden [&::-webkit-search-results-decoration]:hidden',
+    isDatetimeLocal
+      ? 'ps-1 pe-8 [&::-webkit-calendar-picker-indicator]:hidden [&::-moz-calendar-picker-indicator]:hidden'
+      : mergeClasses('[&::-webkit-calendar-picker-indicator]:invert', showCopy ? 'ps-1 pe-8' : 'px-1'),
+    customInputClass
+  )
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isDatetimeLocal) {
+      setIsInvalidDate(Boolean(e.target.validity?.badInput))
+    }
+    onChange?.(e.target.value)
+  }
+
+  const handleClear = () => {
+    onChange?.('')
+    onClear?.()
+  }
+
+  const handleFocus = () => {
+    onFocus?.()
+  }
+
+  const handleBlur = () => {
+    if (trimWhitespace && typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed !== value) {
+        onChange?.(trimmed)
+      }
+    }
+    onBlur?.()
+  }
+
+  const handleKeyUp = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isDatetimeLocal) {
+      if (e.currentTarget.validity?.badInput) {
+        setIsInvalidDate(true)
+      } else {
+        setIsInvalidDate(false)
+      }
+    }
+  }
+
+  const handleCopyToClipboard = async () => {
+    if (hasCopied) return
+
+    const textToCopy = value?.toString() ?? ''
+
+    try {
+      await copyToClipboard(textToCopy)
+      setHasCopied(true)
+      setTimeout(() => {
+        setHasCopied(null)
+      }, 2000)
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error)
+    }
+  }
+
+  const togglePasswordVisibility = () => {
+    setShowPassword((prev) => !prev)
+  }
+
+  const openDatePicker = () => {
+    const input = readInputRef.current
+    if (!input || disabled || readOnly) return
+    input.focus()
+    input.showPicker?.()
+  }
+
+  // Show password toggle when it is a password field
+  const shouldShowPasswordToggle = type === 'password'
+  const shouldShowDatePickerButton = isDatetimeLocal && !readOnly && !disabled
+
+  return (
+    <div className={mergeClasses('w-full', className)} cy-id="text-input">
+      {label && (
+        <Label htmlFor={inputId} disabled={disabled}>
+          {label}
+        </Label>
+      )}
+
+      <InputWrapper
+        disabled={disabled}
+        readOnly={readOnly}
+        error={error || isInvalidDate}
+        inputRef={readInputRef}
+        size={size}
+        className={mergeClasses('group', wrapperClassName)}
+      >
+        <input
+          ref={writeInputRef}
+          id={inputId}
+          name={name}
+          value={value?.toString() ?? ''}
+          autoComplete={autocomplete}
+          type={actualType}
+          step={step?.toString()}
+          min={min?.toString()}
+          readOnly={readOnly}
+          disabled={disabled}
+          placeholder={placeholder}
+          dir="auto"
+          className={inputClass}
+          enterKeyHint={enterKeyHint}
+          onChange={handleChange}
+          onKeyUp={handleKeyUp}
+          onKeyDown={onKeyDown}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          // Accessibility attributes
+          aria-invalid={ariaInvalid}
+          aria-label={ariaLabel}
+          // Password managers inject attributes (e.g. aria-autocomplete) before hydration
+          suppressHydrationWarning={type === 'password'}
+          cy-id="text-input-field"
+        />
+
+        {clearable && value && (
+          <div className="absolute end-0 top-0 flex h-full items-center justify-center px-2">
+            <button
+              type="button"
+              className={mergeClasses(
+                'material-symbols text-foreground-muted hover:text-foreground focus:ring-foreground-muted cursor-pointer rounded focus:ring-2 focus:ring-offset-1 focus:outline-none',
+                clearButtonClassName
+              )}
+              style={{ fontSize: '1.1rem' }}
+              onClick={handleClear}
+              aria-label={t('ButtonClear')}
+              cy-id="text-input-clear"
+            >
+              close
+            </button>
+          </div>
+        )}
+
+        {shouldShowPasswordToggle && (
+          // password visibility toggle button only show on hover and focus
+          <div className="pointer-events-none absolute end-0 top-0 flex h-full items-center justify-center px-4 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+            <button
+              type="button"
+              className="text-foreground-muted hover:text-foreground focus:ring-foreground-muted flex cursor-pointer rounded text-lg focus:ring-2 focus:ring-offset-1 focus:outline-none"
+              onClick={togglePasswordVisibility}
+              aria-label={showPassword ? t('ButtonHidePassword') : t('ButtonShowPassword')}
+              aria-controls={inputId}
+              cy-id="text-input-password-toggle"
+            >
+              {!showPassword ? (
+                <span className="material-symbols" aria-hidden="true">
+                  visibility
+                </span>
+              ) : (
+                <span className="material-symbols" aria-hidden="true">
+                  visibility_off
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+
+        {shouldShowDatePickerButton && (
+          <div className="absolute end-0 top-0 flex h-full items-center justify-center px-2">
+            <button
+              type="button"
+              className="text-foreground-muted hover:text-foreground focus:ring-foreground-muted flex cursor-pointer rounded text-lg focus:ring-2 focus:ring-offset-1 focus:outline-none"
+              onClick={openDatePicker}
+              aria-label={label || t('LabelDatetime')}
+              cy-id="text-input-date-picker"
+            >
+              <span className="material-symbols text-xl" aria-hidden="true">
+                calendar_today
+              </span>
+            </button>
+          </div>
+        )}
+
+        {showCopy && type !== 'password' && (
+          <div className="absolute end-0 top-0 flex h-full items-center justify-center px-2">
+            <button
+              type="button"
+              className={mergeClasses(
+                'material-symbols focus:ring-foreground-muted cursor-pointer rounded text-lg focus:ring-2 focus:ring-offset-1 focus:outline-none',
+                hasCopied ? 'text-success' : 'text-foreground-muted hover:text-foreground'
+              )}
+              onClick={handleCopyToClipboard}
+              aria-label={hasCopied ? t('ButtonCopiedToClipboard') : t('ButtonCopyToClipboard')}
+              cy-id="text-input-copy"
+            >
+              {!hasCopied ? 'content_copy' : 'done'}
+            </button>
+          </div>
+        )}
+      </InputWrapper>
+    </div>
+  )
+}

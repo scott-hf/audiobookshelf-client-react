@@ -27,6 +27,18 @@ export class HtmlAudioPlayer {
   private lastSyncedAt = 0
   private readonly listeners = new Set<PlayerListener>()
   private state: PlayerState = INITIAL_PLAYER_STATE
+  /**
+   * Incremented by every `play()` and `close()` so an in-flight `play()` can detect that it has
+   * been superseded and clean up after itself.
+   *
+   * Without this, two overlapping `play()` calls each `await startSession()` and then each
+   * assign `this.audio` -- last writer wins, and the first Audio element is orphaned: still
+   * playing, no longer referenced, impossible for `close()` to pause. React StrictMode's
+   * double-invoked effects reproduce it every time in dev (PlayerPage mounts, plays, is torn
+   * down and remounted before the first session resolves), but any rapid re-entry does it too.
+   * It also opened a second ABS playback session that was never closed.
+   */
+  private playGeneration = 0
 
   constructor(deps: HtmlAudioPlayerDeps) {
     this.api = deps.api
@@ -48,7 +60,11 @@ export class HtmlAudioPlayer {
   }
 
   async play(itemId: string): Promise<void> {
-    await this.close()
+    // Claim this generation first so any already-running play() sees itself superseded.
+    const generation = ++this.playGeneration
+    await this.teardown()
+    if (generation !== this.playGeneration) return
+
     this.setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
 
     try {
@@ -59,6 +75,14 @@ export class HtmlAudioPlayer {
         forceTranscode: false,
         forceDirectPlay: false
       })
+
+      // Superseded while the session was opening: close the session we just opened rather than
+      // leaking it, and never touch this.audio (a newer play() owns it now).
+      if (generation !== this.playGeneration) {
+        await this.api.closeSession(session.id, { currentTime: session.currentTime, timeListened: 0 })
+        return
+      }
+
       const track = session.audioTracks[0]
       if (!track) throw new Error('Session has no audio tracks')
 
@@ -71,9 +95,24 @@ export class HtmlAudioPlayer {
       this.lastSyncedAt = session.currentTime
 
       await audio.play()
+
+      // Superseded while the element was starting: stop the audio we just started, and close
+      // the session unless a newer play()/close() already took ownership of our fields.
+      if (generation !== this.playGeneration) {
+        audio.pause()
+        if (this.audio === audio) {
+          this.audio = null
+          this.sessionId = null
+        }
+        await this.api.closeSession(session.id, { currentTime: audio.currentTime, timeListened: 0 })
+        return
+      }
+
       this.setState({ status: 'playing', duration: track.duration, currentTime: audio.currentTime })
       this.startSyncTimer()
     } catch (error) {
+      // A superseded attempt must not clobber the newer attempt's state or surface its failure.
+      if (generation !== this.playGeneration) return
       this.setState({ status: 'error', error: error instanceof Error ? error.message : 'Playback failed' })
       throw error
     }
@@ -126,6 +165,16 @@ export class HtmlAudioPlayer {
   /** Explicit stop, item replacement, or app-background: stop syncing, report final progress,
    * and release the audio element. */
   async close(): Promise<void> {
+    // Supersede any in-flight play() so it tears down its own audio/session instead of
+    // installing them after we have already cleaned up.
+    this.playGeneration++
+    await this.teardown()
+    this.setState({ status: 'idle', itemId: null })
+  }
+
+  /** Releases the current audio element and ABS session. Does not touch `playGeneration` --
+   * callers decide whether they are superseding an in-flight play(). */
+  private async teardown(): Promise<void> {
     this.stopSyncTimer()
     const audio = this.audio
     const sessionId = this.sessionId
@@ -138,7 +187,5 @@ export class HtmlAudioPlayer {
       audio.pause()
       await this.api.closeSession(sessionId, { currentTime, timeListened })
     }
-
-    this.setState({ status: 'idle', itemId: null })
   }
 }

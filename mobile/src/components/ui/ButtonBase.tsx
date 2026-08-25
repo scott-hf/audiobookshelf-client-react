@@ -1,0 +1,112 @@
+'use client'
+
+import { mergeClasses } from '@/lib/merge-classes'
+import Link from 'next/link'
+import React from 'react'
+
+interface ButtonBaseProps {
+  id?: string
+  to?: string
+  children: React.ReactNode
+  disabled?: boolean
+  borderless?: boolean
+  size?: 'small' | 'medium' | 'large' | 'auto' | 'custom'
+  onClick?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void
+  onMouseDown?: (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement | HTMLAnchorElement>) => void
+  type?: 'button' | 'submit' | 'reset'
+  ariaLabel?: string
+  className?: string
+  ref?: React.Ref<HTMLButtonElement>
+  // Allow any additional HTML attributes
+  [key: string]: unknown
+}
+
+const ButtonBase = ({
+  id,
+  to,
+  children,
+  disabled = false,
+  borderless = false,
+  size = 'medium',
+  className = '',
+  onClick,
+  onMouseDown,
+  onKeyDown,
+  type = 'button',
+  ariaLabel,
+  ref,
+  ...props
+}: ButtonBaseProps) => {
+  const buttonClass = mergeClasses(
+    // Base styles
+    'relative shadow-md border border-border rounded-md bg-primary flex items-center justify-center overflow-hidden',
+
+    // Focus styles
+    'focus-visible:outline-1 focus-visible:outline-foreground-muted focus-visible:outline-offset-0',
+
+    // Size-based height (identical to InputWrapper)
+    size === 'small' ? 'h-9' : size === 'large' ? 'h-11' : size === 'auto' ? 'min-h-10 h-auto' : size === 'custom' ? '' : 'h-10',
+
+    // Disabled styles
+    'disabled:bg-bg-disabled disabled:cursor-not-allowed disabled:border-none disabled:text-disabled',
+
+    // Borderless styles
+    borderless ? 'border-0 bg-transparent shadow-none text-button-foreground-muted' : 'border',
+
+    // Before pseudo-element (replacing abs-btn::before)
+    'before:content-[""] before:absolute before:inset-0 before:bg-transparent before:pointer-events-none',
+
+    // Hover styles
+    borderless ? 'hover:not-disabled:text-button-foreground' : 'hover:not-disabled:before:bg-bg-hover',
+
+    // Custom className
+    className
+  )
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => {
+    if (onClick && !disabled) {
+      onClick(e)
+    }
+  }
+
+  const isDisabled = disabled
+
+  if (to) {
+    return (
+      <Link
+        href={to}
+        className={buttonClass}
+        onClick={handleClick}
+        onMouseDown={onMouseDown}
+        onKeyDown={onKeyDown}
+        style={{ pointerEvents: isDisabled ? 'none' : 'auto' }}
+        tabIndex={isDisabled ? -1 : 0}
+        aria-disabled={isDisabled}
+        aria-label={ariaLabel}
+        {...props}
+      >
+        {children}
+      </Link>
+    )
+  }
+
+  return (
+    <button
+      id={id}
+      ref={ref}
+      type={type}
+      disabled={disabled}
+      className={buttonClass}
+      onClick={handleClick}
+      onMouseDown={onMouseDown}
+      onKeyDown={onKeyDown}
+      aria-label={ariaLabel}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+
+export default ButtonBase

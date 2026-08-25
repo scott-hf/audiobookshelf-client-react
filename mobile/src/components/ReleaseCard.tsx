@@ -1,4 +1,6 @@
 import type { SearchRelease } from '@abs/acquisition-contract'
+import Badge from './Badge'
+import Btn from './ui/Btn'
 
 function bytesPretty(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -31,26 +33,33 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
   const narrators = release.narrators.join(', ')
 
   return (
-    <div className="release-card" data-testid="release-card">
-      <div className="release-card-info">
-        <p className="release-card-title">{release.title}</p>
-        <p className="release-card-author">
-          {release.author}
-          {narrators ? ` · ${narrators}` : ''}
-        </p>
-        <div className="release-card-badges">
-          <span className="badge">{release.format.toUpperCase()}</span>
-          {release.sizeBytes != null && <span className="badge">{bytesPretty(release.sizeBytes)}</span>}
-          {release.durationSeconds != null && <span className="badge">{durationPretty(release.durationSeconds)}</span>}
-          <span className="badge">{release.sourceLabel}</span>
-          <span className="badge">{release.qualityLabel}</span>
-          {release.seeders != null && <span className="badge">{release.seeders} seeders</span>}
-          {release.alreadyOwned && <span className="badge badge-success">Already owned</span>}
-        </div>
+    <div className="bg-primary border-border rounded-md border p-3" data-testid="release-card">
+      <p className="text-foreground text-sm leading-snug font-semibold">{release.title}</p>
+      <p className="text-foreground-subdued text-xs">
+        {release.author}
+        {narrators ? ` · ${narrators}` : ''}
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <Badge tone="info">{release.format.toUpperCase()}</Badge>
+        {release.sizeBytes != null && <Badge>{bytesPretty(release.sizeBytes)}</Badge>}
+        {release.durationSeconds != null && <Badge>{durationPretty(release.durationSeconds)}</Badge>}
+        <Badge>{release.sourceLabel}</Badge>
+        <Badge>{release.qualityLabel}</Badge>
+        {release.seeders != null && <Badge>{release.seeders} seeders</Badge>}
+        {release.alreadyOwned && <Badge tone="success">Already owned</Badge>}
       </div>
-      <button type="button" className="release-card-acquire" disabled={!canAcquire || submitting} onClick={() => onAcquire(release)}>
-        {submitting ? 'Working…' : 'Acquire'}
-      </button>
+
+      <Btn
+        size="small"
+        color="bg-accent"
+        disabled={!canAcquire || submitting}
+        loading={submitting}
+        onClick={() => onAcquire(release)}
+        className="mt-3 w-full justify-center"
+      >
+        Acquire
+      </Btn>
     </div>
   )
 }

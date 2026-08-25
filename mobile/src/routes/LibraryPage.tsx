@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import BookCard from '../components/BookCard'
 import LoadingView from '../components/LoadingView'
+import PageMessage from '../components/ui/PageMessage'
 import type { AbsLibraryItem } from '../types/abs'
 
 export default function LibraryPage() {
@@ -31,19 +32,47 @@ export default function LibraryPage() {
 
   if (!libraryId) return null
 
+  const libraryPath = `/library/${encodeURIComponent(libraryId)}`
+
   return (
-    <div className="library-page">
-      <nav className="library-page-nav">
-        <Link to={`/library/${encodeURIComponent(libraryId)}/discover`}>Discover</Link>
-        <Link to={`/library/${encodeURIComponent(libraryId)}/acquisition-queue`}>Queue</Link>
+    <div>
+      <nav className="mb-4 flex gap-2" aria-label="Library actions">
+        <Link
+          to={`${libraryPath}/discover`}
+          className="bg-primary border-border text-foreground hover:bg-bg-hover flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
+        >
+          <span className="material-symbols text-base" aria-hidden="true">
+            travel_explore
+          </span>
+          Discover
+        </Link>
+        <Link
+          to={`${libraryPath}/acquisition-queue`}
+          className="bg-primary border-border text-foreground hover:bg-bg-hover flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
+        >
+          <span className="material-symbols text-base" aria-hidden="true">
+            playlist_add_check
+          </span>
+          Queue
+        </Link>
       </nav>
-      {error && <p role="alert">{error}</p>}
+
+      {error && (
+        <p role="alert" className="text-error py-10 text-center">
+          {error}
+        </p>
+      )}
       {!error && !items && <LoadingView label="Loading books…" />}
-      {!error && items && items.length === 0 && <p>No books in this library yet.</p>}
+      {!error && items && items.length === 0 && <PageMessage message="No books in this library yet." />}
       {!error && items && items.length > 0 && (
-        <div className="library-grid">
+        <div className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4">
           {items.map((item) => (
-            <BookCard key={item.id} item={item} onSelect={(selected) => navigate(`/library/${encodeURIComponent(libraryId)}/item/${encodeURIComponent(selected.id)}`)} />
+            <BookCard
+              key={item.id}
+              item={item}
+              coverUrl={client.authorizedStreamUrl(`/api/items/${encodeURIComponent(item.id)}/cover`)}
+              onSelect={(selected) => navigate(`${libraryPath}/item/${encodeURIComponent(selected.id)}`)}
+            />
           ))}
         </div>
       )}

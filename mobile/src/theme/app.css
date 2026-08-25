@@ -1,0 +1,179 @@
+/*
+ * Mobile subset of the upstream client's src/assets/app.css.
+ * Desktop-only bookshelf/toast/Vue-Toastification rules are intentionally omitted;
+ * what remains is what the ported ui/ components and the mobile shell actually use.
+ */
+
+@import './fonts.css';
+@import './absicons.css';
+
+/* Required by ButtonBase/Btn (.abs-btn hover + disabled overlay) */
+.abs-btn::before {
+  content: '';
+  position: absolute;
+  border-radius: 6px;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0);
+  transition: all 0.1s ease-in-out;
+}
+
+.abs-btn:hover:not(:disabled)::before {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.abs-btn:disabled::before {
+  background-color: rgba(0, 0, 0, 0.2);
+}
+
+.page-bg-gradient {
+  background-image: var(--tc-page-gradient);
+}
+
+/* Cover accent backdrop (book details / player) */
+.library-item-cover-accent-backdrop {
+  opacity: 0;
+  animation: library-item-cover-accent-fade-in 0.55s ease-out forwards;
+  background: var(--tc-library-item-accent-background);
+  -webkit-mask-image: var(--tc-library-item-accent-mask-image);
+  -webkit-mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-image: var(--tc-library-item-accent-mask-image);
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+}
+
+.player-cover-accent-backdrop {
+  opacity: 0;
+  animation: library-item-cover-accent-fade-in 0.55s ease-out forwards;
+  /* --tc-player-accent-rgb is set on the media player container */
+  background: radial-gradient(
+    ellipse 128% 92% at -4% -3%,
+    rgb(var(--tc-player-accent-rgb) / 0.13) 0%,
+    rgb(var(--tc-player-accent-rgb) / 0.075) 40%,
+    rgb(var(--tc-player-accent-rgb) / 0.01) 76%,
+    rgb(var(--tc-player-accent-rgb) / 0) 90%
+  );
+}
+
+@keyframes library-item-cover-accent-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-item-cover-accent-backdrop,
+  .player-cover-accent-backdrop {
+    animation-duration: 0.01ms;
+  }
+}
+
+.cover-bg {
+  width: calc(100% + 40px);
+  height: calc(100% + 40px);
+  top: -20px;
+  left: -20px;
+  background-size: 100% 100%;
+  background-position: center;
+  opacity: 1;
+  filter: blur(20px);
+}
+
+/* Scrollbars: hidden by default on touch, upstream styling kept for the few scroll regions */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar:horizontal {
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: rgba(0, 0, 0, 0);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #855620;
+  border-radius: 4px;
+}
+
+.no-scroll::-webkit-scrollbar {
+  display: none;
+  opacity: 0;
+}
+
+.no-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.arrow-down-small {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid currentColor;
+}
+
+/* Shadow utilities used by cards, app bar and the player sheet */
+.box-shadow-sm-up {
+  box-shadow: 0px -5px 8px #11111122;
+}
+
+.box-shadow-md-up {
+  box-shadow: 0px -8px 8px #11111144;
+}
+
+.box-shadow-lg-up {
+  box-shadow: 0px -12px 8px #111111ee;
+}
+
+.box-shadow-xl {
+  box-shadow: 2px 14px 8px #111111aa;
+}
+
+.box-shadow-book {
+  box-shadow:
+    4px 1px 8px #11111166,
+    -4px 1px 8px #11111166,
+    1px -4px 8px #11111166;
+}
+
+.box-shadow-progressbar {
+  box-shadow: 0px -1px 4px rgb(62, 50, 2, 0.5);
+}
+
+.box-shadow-appbar {
+  box-shadow: 0px 5px 5px #11111155;
+}
+
+.box-shadow-toolbar {
+  box-shadow: 0px 8px 6px #111111aa;
+}
+
+/* Screen reader only utility class */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

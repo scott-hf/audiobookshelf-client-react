@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { withClientDefaults } from '../test/absClientMock'
 import { DownloadProvider } from '../downloads/DownloadProvider'
 import type { RawDownloadEvent } from '../downloads/downloadTypes'
 import type { AbsLibraryItem, AbsPlaybackSession } from '../types/abs'
@@ -64,7 +65,7 @@ function session(): AbsPlaybackSession {
 function renderApp(client: Partial<AbsClient>) {
   const authValue: AuthContextValue = {
     state: { status: 'authenticated', serverUrl: 'https://books.test' },
-    client: client as AbsClient,
+    client: withClientDefaults(client),
     acquisitionClient: null,
     login: vi.fn(),
     logout: vi.fn()
@@ -130,7 +131,7 @@ describe('DownloadsPage', () => {
       <AuthContext.Provider
         value={{
           state: { status: 'authenticated', serverUrl: 'https://books.test' },
-          client: client as AbsClient,
+          client: withClientDefaults(client),
           acquisitionClient: null,
           login: vi.fn(),
           logout: vi.fn()

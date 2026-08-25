@@ -71,12 +71,30 @@ const GATEWAY_ERROR_MESSAGES: Record<string, string> = {
   gateway_not_ready: 'The acquisition gateway is not ready yet.'
 }
 
-/** Never echoes a raw upstream message verbatim into the UI -- same policy as the web app's
+/**
+ * Never echoes a raw upstream message verbatim into the UI -- same policy as the web app's
  * formatAcquisitionError (src/lib/acquisition.ts), without the next-intl dependency mobile
- * does not carry. */
+ * does not carry.
+ *
+ * Beyond the known gateway codes, the two failures worth separating are the ones where
+ * "please try again" is actively wrong: the gateway not being routable on this server (the
+ * ABS host answers, but nothing serves /acquisition-api/, so the 404 body is HTML with no
+ * gateway code), and the request never reaching it at all (offline, or a cross-origin block).
+ * Retrying fixes neither, and telling someone to retry hides a server-side misconfiguration.
+ */
 export function formatAcquisitionError(error: unknown): string {
   if (error instanceof AcquisitionApiError) {
-    return GATEWAY_ERROR_MESSAGES[error.code] ?? 'Something went wrong. Please try again.'
+    const known = GATEWAY_ERROR_MESSAGES[error.code]
+    if (known) return known
+    if (error.status === 404) return 'The acquisition service is not available on this server.'
+    if (error.status === 401 || error.status === 403) return 'You are not authorized to use the acquisition service.'
+    if (error.status >= 500) return `The acquisition service returned an error (${error.status}). Try again shortly.`
+    return `The acquisition service rejected the request (${error.status}).`
+  }
+  // `fetch` rejects with TypeError for every pre-response failure -- offline, DNS, connection
+  // refused, and CORS rejections are indistinguishable here by design.
+  if (error instanceof TypeError) {
+    return 'Could not reach the acquisition service. Check your connection and that the server exposes it.'
   }
   return 'Something went wrong. Please try again.'
 }

@@ -1,3 +1,5 @@
+import Badge from './Badge'
+import Btn from './ui/Btn'
 import type { DownloadSnapshot, DownloadState } from '../downloads/downloadTypes'
 
 const STATE_LABELS: Record<DownloadState, string> = {
@@ -9,6 +11,15 @@ const STATE_LABELS: Record<DownloadState, string> = {
   complete: 'Downloaded',
   failed: 'Failed',
   cancelled: 'Cancelled'
+}
+
+const STATE_TONES: Partial<Record<DownloadState, 'success' | 'error' | 'info' | 'warning'>> = {
+  running: 'info',
+  complete: 'success',
+  failed: 'error',
+  cancelled: 'error',
+  waiting_for_network: 'warning',
+  waiting_for_space: 'warning'
 }
 
 const PAUSABLE_STATES: DownloadState[] = ['queued', 'running', 'waiting_for_network', 'waiting_for_space']
@@ -28,32 +39,41 @@ export default function DownloadRow({ download, onPause, onResume, onCancel }: D
   const canCancel = CANCELLABLE_STATES.includes(download.state)
 
   return (
-    <div className="download-row" data-testid="download-row">
-      <div className="download-row-info">
-        <p className="download-row-title">{download.title}</p>
-        <div className="download-row-badges">
-          <span className="badge">{STATE_LABELS[download.state]}</span>
-          {download.progressPercent != null && <span className="download-row-progress-value">{download.progressPercent}%</span>}
-          {download.error && <span className="badge badge-error">Error: {download.error}</span>}
+    <div className="bg-primary border-border rounded-md border p-3" data-testid="download-row">
+      <p className="text-foreground text-sm leading-snug font-semibold">{download.title}</p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <Badge tone={STATE_TONES[download.state] ?? 'neutral'}>{STATE_LABELS[download.state]}</Badge>
+        {download.progressPercent != null && <span className="text-foreground-muted text-xs tabular-nums">{download.progressPercent}%</span>}
+      </div>
+
+      {download.progressPercent != null && (
+        <div className="bg-track-bg mt-2 h-1 w-full overflow-hidden rounded-full">
+          <div className="bg-accent h-full rounded-full transition-all duration-300" style={{ width: `${download.progressPercent}%` }} />
         </div>
-      </div>
-      <div className="download-row-actions">
-        {canPause && (
-          <button type="button" className="download-row-button" onClick={() => onPause(download.id)}>
-            Pause
-          </button>
-        )}
-        {canResume && (
-          <button type="button" className="download-row-button" onClick={() => onResume(download.id)}>
-            Resume
-          </button>
-        )}
-        {canCancel && (
-          <button type="button" className="download-row-button download-row-button-danger" onClick={() => onCancel(download.id)}>
-            Cancel
-          </button>
-        )}
-      </div>
+      )}
+
+      {download.error && <p className="text-error mt-2 text-xs">Error: {download.error}</p>}
+
+      {(canPause || canResume || canCancel) && (
+        <div className="mt-3 flex gap-2">
+          {canPause && (
+            <Btn size="small" onClick={() => onPause(download.id)} className="justify-center">
+              Pause
+            </Btn>
+          )}
+          {canResume && (
+            <Btn size="small" onClick={() => onResume(download.id)} className="justify-center">
+              Resume
+            </Btn>
+          )}
+          {canCancel && (
+            <Btn size="small" color="bg-error" onClick={() => onCancel(download.id)} className="justify-center">
+              Cancel
+            </Btn>
+          )}
+        </div>
+      )}
     </div>
   )
 }

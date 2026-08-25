@@ -1,7 +1,8 @@
 import { App as CapacitorApp } from '@capacitor/app'
 import { useEffect, useRef } from 'react'
-import { BrowserRouter, Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
+import AppTabBar from './components/AppTabBar'
 import LoadingView from './components/LoadingView'
 import { AcquisitionProvider } from './contexts/AcquisitionContext'
 import { DownloadProvider } from './downloads/DownloadProvider'
@@ -62,13 +63,8 @@ function AuthenticatedApp() {
       <DownloadProvider>
         <SettingsProvider>
           <PlayerProvider>
-            <nav className="app-nav">
-              <Link to="/downloads">Downloads</Link>
-              {/* WI-1496 t900 Task 5 follow-up: SettingsPage/SettingsProvider existed but were
-                  never reachable from the app shell -- wired here so the settings feature the
-                  parity audit documents as "implemented" is actually navigable. */}
-              <Link to="/settings">Settings</Link>
-            </nav>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3 pb-6">
             <Routes>
               <Route path="/" element={<Navigate to="/libraries" replace />} />
               <Route path="/libraries" element={<LibrariesPage />} />
@@ -85,6 +81,12 @@ function AuthenticatedApp() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<Navigate to="/libraries" replace />} />
             </Routes>
+              </div>
+              {/* WI-1496 t900 Task 5 follow-up: SettingsPage/SettingsProvider existed but were
+                  never reachable from the app shell -- reachable here via the tab bar so the
+                  settings feature the parity audit documents as "implemented" is navigable. */}
+              <AppTabBar />
+            </div>
           </PlayerProvider>
         </SettingsProvider>
       </DownloadProvider>
@@ -104,11 +106,15 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <DeepLinkListener />
-        <div className="app-shell">
-          <header className="app-topbar">
-            <h1>ShelfDroid</h1>
+        <div className="page-bg-gradient flex h-full flex-col">
+          <header
+            className="bg-primary border-border box-shadow-appbar z-20 flex shrink-0 items-center gap-2 border-b px-4"
+            style={{ paddingTop: 'var(--abs-safe-top)', height: 'calc(4rem + var(--abs-safe-top))' }}
+          >
+            <span className="abs-icons icon-audiobookshelf text-accent text-2xl" aria-hidden="true" />
+            <h1 className="text-foreground text-lg font-semibold tracking-wide">ShelfDroid</h1>
           </header>
-          <main className="app-content">
+          <main className="flex min-h-0 flex-1 flex-col">
             <AppBody />
           </main>
         </div>
