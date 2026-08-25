@@ -102,7 +102,7 @@ class PlayerNotificationService : Service() {
     /** WI-1496 t700 Task 4: survives process death / service recreation. Real store is plain
      * SharedPreferences (see PlaybackStateStore's doc note on why unencrypted is fine here);
      * mutable + open for test injection, mirroring SecureSessionPlugin's `storeOverride`. */
-    var stateStore: PlaybackStateStore = PlaybackStateStore(this)
+    lateinit var stateStore: PlaybackStateStore
 
     private val sleepTimerManager = SleepTimerManager()
     private val sleepCheckHandler = Handler(Looper.getMainLooper())
@@ -141,6 +141,11 @@ class PlayerNotificationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // Context isn't attached during Service construction, so this can't be a field
+        // initializer -- PlaybackStateStore(this) would NPE inside getSharedPreferences() before
+        // onCreate() runs (confirmed via real-device crash, WI-1496).
+        stateStore = PlaybackStateStore(this)
 
         mediaSession = MediaSessionCompat(this, tag).apply {
             val sessionActivityPendingIntent = packageManager?.getLaunchIntentForPackage(packageName)?.let {
