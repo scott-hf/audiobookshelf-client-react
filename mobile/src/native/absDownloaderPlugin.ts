@@ -1,6 +1,6 @@
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 import type { AbsPlaybackSession } from '../types/abs'
-import type { DownloadSnapshot } from '../downloads/downloadTypes'
+import type { RawDownloadEvent } from '../downloads/downloadTypes'
 
 /** Options passed to the native plugin's `enqueue` call: the resolved ABS playback session
  * (audio tracks + urls, same shape `AbsAudioPlayerPlugin.load` already consumes in t700) plus
@@ -29,10 +29,15 @@ export interface AbsDownloaderPlugin {
   /** Removes a completed download's local files (distinct from `cancel`, which only stops an
    * in-flight one) -- the offline catalog's "delete downloaded book" action. */
   remove(options: { libraryItemId: string }): Promise<void>
-  listQueue(): Promise<DownloadSnapshot[]>
-  addListener(event: 'downloadProgress', listener: (state: DownloadSnapshot) => void): Promise<PluginListenerHandle>
-  addListener(event: 'downloadComplete', listener: (state: DownloadSnapshot) => void): Promise<PluginListenerHandle>
-  addListener(event: 'downloadFailed', listener: (state: DownloadSnapshot) => void): Promise<PluginListenerHandle>
+  /** WI-1496 t800 Task 4 reconciliation: `AbsDownloader.kt`'s `listQueue()` actually resolves
+   * `{ items: [...] }` (`JSObject().put("items", array)`), not a bare top-level array -- Capacitor
+   * plugin calls can't marshal a bare array through `PluginCall.resolve`. Each item is
+   * `RawDownloadEvent`-shaped (no `progressPercent`, computed client-side by `toDownloadSnapshot`),
+   * not the already-derived `DownloadSnapshot` this Task 1 sketch originally declared. */
+  listQueue(): Promise<{ items: RawDownloadEvent[] }>
+  addListener(event: 'downloadProgress', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>
+  addListener(event: 'downloadComplete', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>
+  addListener(event: 'downloadFailed', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>
 }
 
 /** Native bridge to android/app/.../plugins/AbsDownloader.kt (Task 2). No web implementation is

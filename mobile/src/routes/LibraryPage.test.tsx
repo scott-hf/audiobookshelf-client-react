@@ -4,10 +4,31 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { DownloadProvider } from '../downloads/DownloadProvider'
 import type { AbsLibrary, AbsLibraryItem } from '../types/abs'
 import BookDetailsPage from './BookDetailsPage'
 import LibrariesPage from './LibrariesPage'
 import LibraryPage from './LibraryPage'
+
+vi.mock('../native/absDownloaderPlugin', () => ({
+  default: {
+    enqueue: vi.fn().mockResolvedValue({ id: 'download-1' }),
+    pause: vi.fn().mockResolvedValue(undefined),
+    resume: vi.fn().mockResolvedValue(undefined),
+    cancel: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
+    listQueue: vi.fn().mockResolvedValue({ items: [] }),
+    addListener: vi.fn().mockResolvedValue({ remove: () => Promise.resolve() })
+  }
+}))
+
+vi.mock('../native/absFileSystemPlugin', () => ({
+  default: {
+    listLocalItems: vi.fn().mockResolvedValue({ items: [] }),
+    chooseDownloadFolder: vi.fn().mockResolvedValue(null),
+    deleteLocalItem: vi.fn().mockResolvedValue(undefined)
+  }
+}))
 
 function library(overrides: Partial<AbsLibrary> & { id: string }): AbsLibrary {
   return { name: 'Library', mediaType: 'book', ...overrides }
@@ -28,13 +49,15 @@ function renderMobile(initialPath: string, client: Partial<AbsClient>) {
   }
   return render(
     <AuthContext.Provider value={authValue}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/libraries" element={<LibrariesPage />} />
-          <Route path="/library/:libraryId" element={<LibraryPage />} />
-          <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
-        </Routes>
-      </MemoryRouter>
+      <DownloadProvider>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/libraries" element={<LibrariesPage />} />
+            <Route path="/library/:libraryId" element={<LibraryPage />} />
+            <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </DownloadProvider>
     </AuthContext.Provider>
   )
 }

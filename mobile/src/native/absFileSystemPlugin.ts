@@ -10,8 +10,10 @@ import type { LocalLibraryItem } from '../downloads/downloadTypes'
  */
 export interface AbsFileSystemPlugin {
   /** Lists every fully downloaded item's local manifest, for the offline catalog UI (Task 4) to
-   * render without a network round trip. */
-  listLocalItems(): Promise<LocalLibraryItem[]>
+   * render without a network round trip. WI-1496 t800 Task 4 reconciliation: `AbsFileSystem.kt`'s
+   * `listLocalItems()` actually resolves `{ items: [...] }`, not a bare top-level array -- same
+   * "Capacitor can't marshal a bare array" constraint as `AbsDownloaderPlugin.listQueue()`. */
+  listLocalItems(): Promise<{ items: LocalLibraryItem[] }>
   /** Opens the OS's SAF folder picker so the user can choose where downloads are stored; returns
    * the persisted tree URI (already granted `takePersistableUriPermission` on the native side). */
   chooseDownloadFolder(): Promise<{ folderUri: string } | null>
