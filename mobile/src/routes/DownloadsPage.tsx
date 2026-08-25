@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom'
 import DownloadRow from '../components/DownloadRow'
 import { useDownloads } from '../downloads/DownloadProvider'
 
@@ -15,7 +16,16 @@ function manifestTitle(manifestJson: string, fallback: string): string {
 
 export default function DownloadsPage() {
   const { queue, localItems, pause, resume, cancel } = useDownloads()
+  const navigate = useNavigate()
   const activeQueue = queue.filter((entry) => entry.state !== 'complete' && !localItems.some((local) => local.libraryItemId === entry.libraryItemId))
+
+  // `PlayerPage` itself starts playback on mount (see routes/PlayerPage.tsx's effect) -- it
+  // resolves offline vs stream via `PlayerProvider`'s own `localItems` lookup, so this only needs
+  // to land on the player route with the right itemId, matching BookDetailsPage's plain "Play"
+  // Link pattern instead of duplicating the `play()` call here.
+  const handlePlayOffline = (libraryItemId: string) => {
+    navigate(`/downloads/${encodeURIComponent(libraryItemId)}/play`)
+  }
 
   return (
     <div className="downloads-page">
@@ -46,10 +56,7 @@ export default function DownloadsPage() {
             {localItems.map((item) => (
               <div key={item.libraryItemId} className="download-local-row" data-testid="download-local-row">
                 <p className="download-local-title">{manifestTitle(item.manifestJson, item.libraryItemId)}</p>
-                {/* Local track selection/playback is Task 5 -- this button is a real, enabled
-                    control (the offline catalog's whole point) but only wires up actual audio
-                    once offlineSource.ts exists. */}
-                <button type="button" className="download-row-button">
+                <button type="button" className="download-row-button" onClick={() => handlePlayOffline(item.libraryItemId)}>
                   Play offline
                 </button>
               </div>

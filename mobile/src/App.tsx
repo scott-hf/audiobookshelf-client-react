@@ -30,6 +30,10 @@ function AuthenticatedApp() {
             <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
             <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
             <Route path="/downloads" element={<DownloadsPage />} />
+            {/* WI-1496 t800 Task 5: the offline catalog only has a `libraryItemId`, no
+                `libraryId` -- PlayerPage only ever reads `:itemId` (see routes/PlayerPage.tsx),
+                so this route reuses the same component under a libraryId-free path. */}
+            <Route path="/downloads/:itemId/play" element={<PlayerPage />} />
             <Route path="*" element={<Navigate to="/libraries" replace />} />
           </Routes>
         </PlayerProvider>

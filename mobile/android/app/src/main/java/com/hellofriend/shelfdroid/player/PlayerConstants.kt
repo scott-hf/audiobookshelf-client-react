@@ -11,3 +11,9 @@ const val CUSTOM_ACTION_JUMP_BACKWARD = "com.hellofriend.shelfdroid.customAction
 // settings, which is out of scope until a later parity task.
 const val JUMP_FORWARD_MS = 30_000L
 const val JUMP_BACKWARD_MS = 10_000L
+
+// WI-1496 t800 Task 5: URI schemes `resolveTrackUrl` passes through untouched instead of
+// prefixing with `serverUrl` -- `http(s)://` (the pre-existing streaming case) plus the local
+// downloader's `file://`/`content://` offline-playback URIs (see `offlineSource.ts`'s
+// `toLocalUri`).
+val LOCAL_URI_SCHEMES = listOf("http://", "https://", "file://", "content://")

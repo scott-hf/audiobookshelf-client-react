@@ -2,10 +2,12 @@ import { App as CapacitorApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthProvider'
+import { useDownloads } from '../downloads/DownloadProvider'
 import AbsAudioPlayerNative from '../native/absAudioPlayerPlugin'
 import { HtmlAudioPlayer } from './htmlAudioPlayer'
 import { createNativeAudioPlayer } from './nativeAudioPlayer'
 import { createNativeProgressSync, NativeProgressSync } from './nativeProgressSync'
+import { LocalTrack, parseLocalManifest, selectPlaybackSource } from './offlineSource'
 import { INITIAL_PLAYER_STATE, PlayerSnapshot, PlayerState } from './playerTypes'
 
 const DEVICE_ID = 'shelfdroid-android'
@@ -35,6 +37,12 @@ export const PlayerContext = createContext<PlayerContextValue | null>(null)
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const { client } = useAuth()
+  // WI-1496 t800 Task 5: `DownloadProvider` is always an ancestor of `PlayerProvider` (see
+  // App.tsx's provider nesting) -- reading `localItems` here, rather than requiring every `play()`
+  // caller to look it up and pass it in, is what lets `play(itemId)` transparently choose offline
+  // vs stream without every call site (PlayerPage, the offline catalog's "Play offline" button)
+  // needing to duplicate that decision.
+  const { localItems } = useDownloads()
   const isNative = useMemo(() => Capacitor.isNativePlatform(), [])
 
   const htmlPlayer = useMemo(() => (isNative ? null : new HtmlAudioPlayer({ api: client })), [client, isNative])
@@ -120,12 +128,54 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setState({ ...INITIAL_PLAYER_STATE })
   }
 
+  /** WI-1496 t800 Task 5: plays a complete local download's tracks by URI instead of the ABS
+   * stream. Still tries to open/sync a real ABS session first (progress reconciliation once
+   * online) via the same `nativeProgressSync` plumbing the stream path uses -- but unlike the
+   * stream path, a failure to reach the server (offline/airplane-mode, the whole point of offline
+   * playback) is not fatal: playback proceeds unsynced, using the item id itself as a stable
+   * session identifier for the player's own state, and progress simply doesn't sync until the
+   * next time this item is opened with the server reachable. */
+  async function loadOfflineTracks(itemId: string, tracks: LocalTrack[]): Promise<void> {
+    if (!nativePlayer) return
+    let sessionId = itemId
+
+    try {
+      const session = await client.startSession(itemId, {
+        deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
+        supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
+        mediaPlayer: 'exo',
+        forceTranscode: false,
+        forceDirectPlay: false
+      })
+      sessionId = session.id
+      progressSyncRef.current = createNativeProgressSync(client, session.id)
+    } catch {
+      // No network / server unreachable -- expected for offline playback. Play unsynced.
+    }
+
+    await nativePlayer.load({
+      session: { id: sessionId, currentTime: 0, audioTracks: tracks.map((track) => ({ index: track.index, contentUrl: track.contentUrl, duration: track.duration })) },
+      accessToken: client.getAccessToken() ?? '',
+      serverUrl: client.getServerUrl() ?? ''
+    })
+  }
+
   async function play(itemId: string): Promise<void> {
     if (nativePlayer) {
       await closeNative()
       itemIdRef.current = itemId
       setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
+
+      const local = localItems.find((entry) => entry.libraryItemId === itemId)
+      const source = selectPlaybackSource({ id: itemId }, parseLocalManifest(local))
+
       try {
+        if (source.kind === 'offline') {
+          await loadOfflineTracks(itemId, source.tracks)
+          await nativePlayer.play()
+          return
+        }
+
         const session = await client.startSession(itemId, {
           deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
           supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],

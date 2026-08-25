@@ -26,6 +26,7 @@ import com.google.android.exoplayer2.source.ConcatenatingMediaSource
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager
+import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.hellofriend.shelfdroid.data.PlaybackSession
 
@@ -187,9 +188,16 @@ class PlayerNotificationService : Service() {
         this.accessToken = accessToken
         this.serverUrl = serverUrl
 
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
+        // WI-1496 t800 Task 5: `DefaultDataSource.Factory` wraps the HTTP factory but delegates to
+        // `FileDataSource`/`ContentDataSource`/`AssetDataSource` internally for `file://`/
+        // `content://`/`asset://` URIs -- required for offline playback, which passes a local
+        // downloader-owned file/content URI (see `offlineSource.ts`'s `toLocalUri`) instead of a
+        // server-relative or absolute HTTP URL. The HTTP path (streaming, the pre-existing
+        // behavior) is unaffected: it's still exactly this same auth'd HTTP factory underneath.
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(NOTIFICATION_CHANNEL_ID)
             .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $accessToken"))
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
 
         val sortedTracks = session.audioTracks.sortedBy { it.index }
         val mediaSource: MediaSource = if (sortedTracks.size == 1) {
@@ -211,8 +219,12 @@ class PlayerNotificationService : Service() {
         player.prepare()
     }
 
+    /** WI-1496 t800 Task 5: `content://`/`file://` are already-complete local-playback URIs
+     * (`offlineSource.ts`'s `toLocalUri` output) -- pass through untouched, exactly like the
+     * pre-existing `http(s)://` case, rather than mistaking them for a server-relative path and
+     * mangling them with `$serverUrl$contentUrl`. */
     private fun resolveTrackUrl(contentUrl: String): String =
-        if (contentUrl.startsWith("http://") || contentUrl.startsWith("https://")) contentUrl else "$serverUrl$contentUrl"
+        if (LOCAL_URI_SCHEMES.any { contentUrl.startsWith(it) }) contentUrl else "$serverUrl$contentUrl"
 
     fun play() {
         player.playWhenReady = true
