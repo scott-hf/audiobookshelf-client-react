@@ -63,6 +63,11 @@ class PlayerNotificationService : Service() {
 
     private var lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, 1f)
 
+    /** WI-1496 t700 Task 4: survives process death / service recreation. Real store is plain
+     * SharedPreferences (see PlaybackStateStore's doc note on why unencrypted is fine here);
+     * mutable + open for test injection, mirroring SecureSessionPlugin's `storeOverride`. */
+    var stateStore: PlaybackStateStore = PlaybackStateStore(this)
+
     private val sleepTimerManager = SleepTimerManager()
     private val sleepCheckHandler = Handler(Looper.getMainLooper())
     private val sleepCheckRunnable = object : Runnable {
@@ -124,6 +129,19 @@ class PlayerNotificationService : Service() {
         playerNotificationManager.setPriority(NotificationCompat.PRIORITY_LOW)
 
         initializePlayer()
+        restoreRecoveryState()
+    }
+
+    /** Reads any [PlaybackStateStore] entry written by a prior instance of this service (this
+     * process, an earlier process before it died, etc.) and surfaces it as a paused, recoverable
+     * snapshot -- `currentSession`/`getState()` reflect it immediately, before any `load()` call
+     * rebuilds a real ExoPlayer media source. Never touches the player or requests a token: full
+     * resumption of audio is the JS side's job (re-fetch the token from `SecureSessionPlugin`,
+     * call `load()` again) once it observes this recoverable state via `getState()`. */
+    private fun restoreRecoveryState() {
+        val stored = stateStore.load() ?: return
+        currentSession = PlaybackStateStore.sessionFromJson(stored.sessionJson)
+        lastSnapshot = PlayerSnapshot(PlayerStatus.PAUSED, stored.positionMs, lastSnapshot.durationMs, stored.rate)
     }
 
     private fun createNotificationChannel(): String {
@@ -248,6 +266,7 @@ class PlayerNotificationService : Service() {
         currentSession = null
         lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, lastSnapshot.rate)
         stateEmitter?.onPlayerState(lastSnapshot)
+        stateStore.clear()
         stopForeground(true)
         stopSelf()
     }
@@ -260,8 +279,34 @@ class PlayerNotificationService : Service() {
         lastSnapshot = result.snapshot
         stateEmitter?.onPlayerState(result.snapshot)
         updateMediaSessionPlaybackState(result.snapshot)
+        persistRecoveryState(result.snapshot)
         if (result.stopForeground) {
             stopForeground(true)
+        }
+    }
+
+    /** Persists (playing/buffering/paused) or clears (ended/error/idle) the recovery snapshot on
+     * every reduced player event -- cheaper than trying to catch every possible teardown path
+     * individually, and self-correcting if one is missed. Never persists [accessToken]. */
+    private fun persistRecoveryState(snapshot: PlayerSnapshot) {
+        when (snapshot.status) {
+            PlayerStatus.PLAYING, PlayerStatus.BUFFERING, PlayerStatus.PAUSED -> {
+                val session = currentSession ?: return
+                stateStore.save(
+                    StoredPlaybackState(
+                        sessionId = session.id,
+                        libraryItemId = session.id,
+                        sessionJson = PlaybackStateStore.sessionToJson(session),
+                        positionMs = snapshot.currentTimeMs,
+                        rate = snapshot.rate,
+                        shouldResume = snapshot.status == PlayerStatus.PLAYING,
+                        serverUrlFingerprint = serverUrl,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            PlayerStatus.ENDED, PlayerStatus.ERROR, PlayerStatus.IDLE -> stateStore.clear()
+            else -> Unit
         }
     }
 

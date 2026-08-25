@@ -81,6 +81,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // WI-1496 t700 Task 4: pick up a session PlayerNotificationService restored from
+  // PlaybackStateStore (process death / service recreation) instead of assuming idle on cold
+  // start. This only reflects the recovered position/status for display -- it does not rebuild
+  // an ExoPlayer media source or resume audio (no token is persisted natively; the user re-enters
+  // the item via `play()` to actually resume playback, which reloads a fresh session + token).
+  useEffect(() => {
+    if (!nativePlayer) return
+    let cancelled = false
+    nativePlayer
+      .getState()
+      .then((snapshot) => {
+        if (cancelled || snapshot.status === 'idle' || !snapshot.itemId) return
+        itemIdRef.current = snapshot.itemId
+        setState(snapshot)
+        setRateState(snapshot.rate)
+      })
+      .catch(() => {
+        // Service not bound yet or nothing to recover -- fine, stay idle.
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativePlayer])
+
   async function closeNative(): Promise<void> {
     if (!nativePlayer) return
     await nativePlayer.stop()

@@ -4,7 +4,9 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -121,8 +123,23 @@ class AbsAudioPlayer : Plugin() {
 
     @PluginMethod
     fun getState(call: PluginCall) {
-        val svc = service ?: return call.reject("Native player service not bound yet")
-        call.resolve(playerSnapshotJs(svc.getState(), svc.currentSession?.id))
+        val svc = service
+        if (svc != null) {
+            call.resolve(playerSnapshotJs(svc.getState(), svc.currentSession?.id))
+            return
+        }
+        // WI-1496 t700 Task 4: `load()` (the Capacitor plugin lifecycle method above, not this
+        // @PluginMethod) starts+binds the service asynchronously as soon as the WebView attaches.
+        // A caller invoking getState() on mount to detect a recoverable session after cold start
+        // (see PlayerProvider.tsx) can race that bind -- retry once, briefly, before giving up.
+        Handler(Looper.getMainLooper()).postDelayed({
+            val retried = service
+            if (retried == null) {
+                call.reject("Native player service not bound yet")
+            } else {
+                call.resolve(playerSnapshotJs(retried.getState(), retried.currentSession?.id))
+            }
+        }, GET_STATE_BIND_RETRY_MS)
     }
 
     /** Shapes a snapshot into TS's `NativePlayerState` (the `playerState` event payload):
@@ -156,5 +173,9 @@ class AbsAudioPlayer : Plugin() {
             bound = false
         }
         super.handleOnDestroy()
+    }
+
+    companion object {
+        private const val GET_STATE_BIND_RETRY_MS = 250L
     }
 }
