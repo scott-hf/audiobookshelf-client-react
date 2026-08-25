@@ -7,6 +7,7 @@ import { AcquisitionProvider } from './contexts/AcquisitionContext'
 import { DownloadProvider } from './downloads/DownloadProvider'
 import { routeFromDeepLink } from './navigation/deepLinks'
 import { PlayerProvider } from './player/PlayerProvider'
+import { SettingsProvider } from './settings/SettingsProvider'
 import AcquisitionQueuePage from './routes/AcquisitionQueuePage'
 import BookDetailsPage from './routes/BookDetailsPage'
 import DiscoverPage from './routes/DiscoverPage'
@@ -15,6 +16,7 @@ import LibrariesPage from './routes/LibrariesPage'
 import LibraryPage from './routes/LibraryPage'
 import LoginPage from './routes/LoginPage'
 import PlayerPage from './routes/PlayerPage'
+import SettingsPage from './routes/SettingsPage'
 
 /** Handles `appUrlOpen` deep links (verified HTTPS App Links + the `shelfdroid://` custom
  * scheme -- WI-1496 t900 Task 4). Rendered unconditionally inside AuthProvider/BrowserRouter so
@@ -58,26 +60,33 @@ function AuthenticatedApp() {
   return (
     <AcquisitionProvider>
       <DownloadProvider>
-        <PlayerProvider>
-          <nav className="app-nav">
-            <Link to="/downloads">Downloads</Link>
-          </nav>
-          <Routes>
-            <Route path="/" element={<Navigate to="/libraries" replace />} />
-            <Route path="/libraries" element={<LibrariesPage />} />
-            <Route path="/library/:libraryId" element={<LibraryPage />} />
-            <Route path="/library/:libraryId/discover" element={<DiscoverPage />} />
-            <Route path="/library/:libraryId/acquisition-queue" element={<AcquisitionQueuePage />} />
-            <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
-            <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
-            <Route path="/downloads" element={<DownloadsPage />} />
-            {/* WI-1496 t800 Task 5: the offline catalog only has a `libraryItemId`, no
-                `libraryId` -- PlayerPage only ever reads `:itemId` (see routes/PlayerPage.tsx),
-                so this route reuses the same component under a libraryId-free path. */}
-            <Route path="/downloads/:itemId/play" element={<PlayerPage />} />
-            <Route path="*" element={<Navigate to="/libraries" replace />} />
-          </Routes>
-        </PlayerProvider>
+        <SettingsProvider>
+          <PlayerProvider>
+            <nav className="app-nav">
+              <Link to="/downloads">Downloads</Link>
+              {/* WI-1496 t900 Task 5 follow-up: SettingsPage/SettingsProvider existed but were
+                  never reachable from the app shell -- wired here so the settings feature the
+                  parity audit documents as "implemented" is actually navigable. */}
+              <Link to="/settings">Settings</Link>
+            </nav>
+            <Routes>
+              <Route path="/" element={<Navigate to="/libraries" replace />} />
+              <Route path="/libraries" element={<LibrariesPage />} />
+              <Route path="/library/:libraryId" element={<LibraryPage />} />
+              <Route path="/library/:libraryId/discover" element={<DiscoverPage />} />
+              <Route path="/library/:libraryId/acquisition-queue" element={<AcquisitionQueuePage />} />
+              <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
+              <Route path="/library/:libraryId/item/:itemId/play" element={<PlayerPage />} />
+              <Route path="/downloads" element={<DownloadsPage />} />
+              {/* WI-1496 t800 Task 5: the offline catalog only has a `libraryItemId`, no
+                  `libraryId` -- PlayerPage only ever reads `:itemId` (see routes/PlayerPage.tsx),
+                  so this route reuses the same component under a libraryId-free path. */}
+              <Route path="/downloads/:itemId/play" element={<PlayerPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="*" element={<Navigate to="/libraries" replace />} />
+            </Routes>
+          </PlayerProvider>
+        </SettingsProvider>
       </DownloadProvider>
     </AcquisitionProvider>
   )
