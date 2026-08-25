@@ -1,8 +1,11 @@
-import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
+import { App as CapacitorApp } from '@capacitor/app'
+import { useEffect, useRef } from 'react'
+import { BrowserRouter, Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import LoadingView from './components/LoadingView'
 import { AcquisitionProvider } from './contexts/AcquisitionContext'
 import { DownloadProvider } from './downloads/DownloadProvider'
+import { routeFromDeepLink } from './navigation/deepLinks'
 import { PlayerProvider } from './player/PlayerProvider'
 import AcquisitionQueuePage from './routes/AcquisitionQueuePage'
 import BookDetailsPage from './routes/BookDetailsPage'
@@ -12,6 +15,44 @@ import LibrariesPage from './routes/LibrariesPage'
 import LibraryPage from './routes/LibraryPage'
 import LoginPage from './routes/LoginPage'
 import PlayerPage from './routes/PlayerPage'
+
+/** Handles `appUrlOpen` deep links (verified HTTPS App Links + the `shelfdroid://` custom
+ * scheme -- WI-1496 t900 Task 4). Rendered unconditionally inside AuthProvider/BrowserRouter so
+ * it can catch a link that arrives before the session is restored: an unauthenticated open is
+ * queued in a ref (not state -- it must not trigger a route change of its own) and replayed once
+ * `state.status` flips to `authenticated`, reusing the same auth-state signal AppBody already
+ * gates on rather than inventing a second one. */
+function DeepLinkListener() {
+  const { state } = useAuth()
+  const navigate = useNavigate()
+  const pendingRouteRef = useRef<string | null>(null)
+  const statusRef = useRef(state.status)
+  statusRef.current = state.status
+
+  useEffect(() => {
+    const listenerHandle = CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      const route = routeFromDeepLink(url)
+      if (!route) return
+      if (statusRef.current === 'authenticated') {
+        navigate(route)
+      } else {
+        pendingRouteRef.current = route
+      }
+    })
+    return () => {
+      void listenerHandle.then((handle) => handle.remove())
+    }
+  }, [navigate])
+
+  useEffect(() => {
+    if (state.status === 'authenticated' && pendingRouteRef.current) {
+      navigate(pendingRouteRef.current)
+      pendingRouteRef.current = null
+    }
+  }, [state.status, navigate])
+
+  return null
+}
 
 function AuthenticatedApp() {
   return (
@@ -53,6 +94,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <DeepLinkListener />
         <div className="app-shell">
           <header className="app-topbar">
             <h1>ShelfDroid</h1>
