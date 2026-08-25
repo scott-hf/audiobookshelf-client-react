@@ -92,10 +92,12 @@ class DbManager(private val baseDir: File) {
             obj.put("libraryItemId", item.libraryItemId)
             obj.put("title", item.title)
             obj.put("serverConnectionId", item.serverConnectionId)
+            obj.put("serverUrl", item.serverUrl)
             obj.put("bytesDownloaded", item.bytesDownloaded)
             obj.put("totalBytes", item.totalBytes)
             obj.put("state", item.state)
             obj.put("error", item.error)
+            obj.put("terminalFailureAt", item.terminalFailureAt)
             val parts = JSONArray()
             item.parts.forEach { parts.put(downloadItemPartToJson(it)) }
             obj.put("parts", parts)
@@ -110,10 +112,12 @@ class DbManager(private val baseDir: File) {
                 libraryItemId = obj.getString("libraryItemId"),
                 title = obj.getString("title"),
                 serverConnectionId = obj.getString("serverConnectionId"),
+                serverUrl = obj.optString("serverUrl", ""),
                 bytesDownloaded = obj.getLong("bytesDownloaded"),
                 totalBytes = obj.getLong("totalBytes"),
                 state = obj.getString("state"),
                 error = if (obj.isNull("error")) null else obj.getString("error"),
+                terminalFailureAt = if (obj.isNull("terminalFailureAt") || !obj.has("terminalFailureAt")) null else obj.getLong("terminalFailureAt"),
                 parts = parts
             )
         }
@@ -126,9 +130,13 @@ class DbManager(private val baseDir: File) {
             obj.put("filename", part.filename)
             obj.put("serverPath", part.serverPath)
             obj.put("finalDestinationPath", part.finalDestinationPath)
+            obj.put("stagingPath", part.stagingPath)
             obj.put("bytesDownloaded", part.bytesDownloaded)
             obj.put("completed", part.completed)
             obj.put("failed", part.failed)
+            obj.put("contentLength", part.contentLength)
+            obj.put("state", part.state)
+            obj.put("retryCount", part.retryCount)
             return obj
         }
 
@@ -139,9 +147,13 @@ class DbManager(private val baseDir: File) {
             filename = obj.getString("filename"),
             serverPath = obj.getString("serverPath"),
             finalDestinationPath = obj.getString("finalDestinationPath"),
+            stagingPath = obj.optString("stagingPath", "${obj.getString("finalDestinationPath")}.part"),
             bytesDownloaded = obj.getLong("bytesDownloaded"),
             completed = obj.getBoolean("completed"),
-            failed = obj.getBoolean("failed")
+            failed = obj.getBoolean("failed"),
+            contentLength = if (obj.has("contentLength")) obj.getLong("contentLength") else -1,
+            state = obj.optString("state", "queued"),
+            retryCount = obj.optInt("retryCount", 0)
         )
 
         private fun localItemToJson(item: LocalLibraryItem): JSONObject {

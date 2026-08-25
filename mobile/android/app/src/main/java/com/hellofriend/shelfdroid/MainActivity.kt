@@ -5,6 +5,7 @@ import android.webkit.WebSettings
 import com.getcapacitor.BridgeActivity
 import com.hellofriend.shelfdroid.plugins.AbsAudioPlayer
 import com.hellofriend.shelfdroid.plugins.AbsDatabase
+import com.hellofriend.shelfdroid.plugins.AbsDownloader
 import com.hellofriend.shelfdroid.plugins.AbsFileSystem
 
 class MainActivity : BridgeActivity() {
@@ -15,6 +16,8 @@ class MainActivity : BridgeActivity() {
         // WI-1496 t800 Task 2: offline downloads' persistence + filesystem bridges.
         registerPlugin(AbsDatabase::class.java)
         registerPlugin(AbsFileSystem::class.java)
+        // WI-1496 t800 Task 3: the foreground downloader bridge.
+        registerPlugin(AbsDownloader::class.java)
         super.onCreate(savedInstanceState)
 
         // ShelfDroid connects to a user-supplied, self-hosted Audiobookshelf server address,

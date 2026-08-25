@@ -41,6 +41,12 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Foreground offline-download transfer service (WI-1496 t800 Task 3). -->
+        <service
+            android:name=".services.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
@@ -56,4 +62,7 @@
     <!-- Foreground native audio playback service (WI-1496 t700) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Foreground offline-download transfer service (WI-1496 t800 Task 3). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 </manifest>

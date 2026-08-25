@@ -64,12 +64,21 @@ dependencies {
     implementation "androidx.activity:activity-ktx:$androidxActivityVersion"
     implementation "com.github.bumptech.glide:glide:$glide_version"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlin_coroutines_version"
+    // Authenticated range-request downloader (WI-1496 t800 Task 3, InternalDownloadManager).
+    // NOT already available transitively -- t700's ExoPlayer playback path uses ExoPlayer's own
+    // DefaultHttpDataSource (java.net.HttpURLConnection-backed), not an OkHttp extension, so this
+    // is a new explicit dependency, not a reuse of an existing one.
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     testImplementation "org.mockito:mockito-core:5.14.2"
     // Real org.json (not the Android SDK's "throw/return-default stub" jar) so
     // JSObject/JSONObject actually work in plain JVM unit tests.
     testImplementation "org.json:json:20240303"
+    // DownloadItemManagerTest (WI-1496 t800 Task 3): fake HTTP server for range/401/byte-mismatch
+    // scenarios, plus coroutine test utilities for awaiting the manager's launched transfer jobs.
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlin_coroutines_version"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     // ServiceTestRule for PlaybackRecoveryTest (WI-1496 t700 Task 4).
