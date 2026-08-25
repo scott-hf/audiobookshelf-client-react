@@ -900,3 +900,87 @@ re-confirmed open and written up as a blocker), cutover itself not executed.
 - Did not verify whether `sqlite3` CLI is present inside the gateway's Alpine-based runtime
   image (Dockerfile not re-inspected this task) -- the runbook's backup step names a fallback
   (mount `/data` read-only from another container) for exactly this uncertainty.
+
+## t1050 Phase D: production library mapping + final smoke test (2026-08-25) -- DONE, cutover complete
+
+Resumed from the checkpoint left mid-t1050 (Phases A-C already done, gateway live on the
+droplet against a disposable ABS library only). This session did the runbook's final two
+ordered steps (section 4, steps 9-10) and closed out the cutover.
+
+**Step 9 (add production library mapping):** Discovered the runbook's own `.env`-only framing
+was incomplete -- the acquisition-gateway's `docker-compose.yml` had no bind mount for
+`/usr/share/books` at all (only `/media/staging` and `/media/disposable-test-library` were
+mounted), so adding the mapping to `LIBRARY_MAPPINGS_JSON` alone would have made the gateway
+write into an ephemeral, unmounted path inside the container -- silently invisible to the real
+ABS instance. Added `- /usr/share/books:/usr/share/books` to the gateway service's volumes
+(host dir owned by uid/gid 999:999, matching the container's own user, so no permission fix
+was needed), backed up `docker-compose.yml` and `.env` first, validated with `docker compose
+config` (exit 0), then added Scott's real MyBooks library
+(`02cbd37d-9391-450a-94f4-d72c8ccc829f` -> `/usr/share/books`) to `LIBRARY_MAPPINGS_JSON`
+alongside the existing disposable-library entry (kept, not replaced) and restarted only
+`acquisition-gateway` (`docker compose -p audiobook-acquisition up -d acquisition-gateway`).
+Verified `ready:true` with both libraries `enabled:true` through the public HTTPS route.
+
+**Real bug found and fixed along the way (crash loop, not in FND-00442's scope):** immediately
+after the restart, the gateway crash-looped every ~15s reconcile tick on
+`SqliteError: FOREIGN KEY constraint failed` inside `Reconciler.cleanup()` ->
+`SearchRepository.deleteExpiredExcept`. Root cause: `cleanup()` only protected *non-terminal*
+acquisitions' `search_session_id` from the expired-session prune, but a *terminal* row
+(`available`/`failed`/`cancelled`) still holds that same FOREIGN KEY for its whole history-
+retention window (`HISTORY_RETENTION_SECONDS`, 7 days by default) -- far longer than a search
+session's own TTL (`SEARCH_TTL_SECONDS`, 15 min). Any acquisition that had gone terminal more
+than 15 minutes earlier (every one of Phase C's disposable-library test books, hours old by
+this session) triggered an uncaught FK violation on the next cleanup pass, which propagated
+out of `runOnce()` unhandled and crashed the whole Node process; Docker's `restart:
+unless-stopped` just relaunched it into the same crash 15 seconds later, forever. Fixed by
+adding `AcquisitionRepository.listSearchSessionIds()` (all rows, not just non-terminal) and
+using it in `Reconciler.cleanup()` instead of `listNonTerminal().map(...)`. Added a regression
+test (`reconciler.test.ts`: "cleanup does not crash pruning an expired search session still
+FK-referenced by a terminal (in-retention) acquisition"). Full gateway suite: 146/146 passed;
+typecheck clean. Committed (`3f7c4a38`), pushed, rebuilt on the droplet, redeployed
+(gateway-only restart), and verified stable for 80s+ across multiple reconcile ticks with
+`RestartCount` staying at 0 (previously it was restarting on essentially every tick).
+
+**Step 10 (final smoke test):** Submitted three real acquisitions against the real production
+library via the gateway API (search -> submit -> poll to terminal), all through the public
+HTTPS route, no code involved beyond the running stack:
+- `1984 - George Orwell` (release `release_xEazVilcuhacI4WBfdRXjg`) got stuck at
+  `processing`/100% indefinitely with zero error. Root-caused live (not fixed this session,
+  filed as `FND-00460`): Librarr's `checkCompleted()` in `internal/download/watcher.go` skips
+  any torrent hash already recorded in its in-process `imported` sync.Map with no library
+  scoping and no log/error on the skip -- this exact release's torrent hash was already
+  imported into the disposable library during Phase C, so the watcher silently no-op'd on the
+  identical hash forever. Cancelled the stuck acquisition (state -> `cancelled` cleanly via
+  `DELETE /acquisitions/:id`) and moved on with a different release.
+- `1984 [Repacked and Chapterized] - George Orwell` (a different torrent/hash) failed cleanly
+  via the existing stall-timeout mechanism (FND-00410's pattern -- TorBox `download_uncached`
+  sat at 0 bytes for the full 5-minute test window and was correctly marked
+  `failed`/`download_stalled`/retryable). Not a code bug, just external torrent-availability
+  flakiness; the stall-timeout guard did exactly its job.
+- `1984 - Anna Lea, George Orwell, Michael Maloney, Rhianne Barreto` (third distinct release)
+  went `submitted` -> `downloading` -> `processing` -> `scanning` -> `available` in ~76 seconds,
+  all 5 unattended, `absItemId` `c50ef8ae-faa8-4235-80bf-0adb323acea7`. Verified directly
+  against the real ABS instance: `GET /api/items/c50ef8ae-...` returns title "1984",
+  `libraryId` `02cbd37d-9391-450a-94f4-d72c8ccc829f` (the real MyBooks library), `path`
+  `/usr/share/books/Unknown/1984 - Anna Lea, George Orwell, Michael Maloney, Rhianne Barreto`;
+  confirmed the real 344,776,054-byte `.m4b` file physically present at that path through the
+  gateway's own bind mount (the same host directory Scott's real ABS reads). Staging cleanup
+  left a couple of empty leftover directories (`/media/staging/1984`, `/media/staging/Unknown`)
+  -- same cosmetic gap already noted in Phase C, no real content leaked, not chased further.
+
+**Findings closed/filed this session:**
+- `FND-00442` formally resolved (`status: fixed`) -- the Decypharr `allowed_file_types` fix
+  from Phase C is what actually fixed it; this session's real production import is additional
+  independent confirmation.
+- `FND-00460` filed (new, open, medium/bug) for the Librarr in-memory dedup gap found above --
+  scoped as a Librarr-source + gateway-reconciler fix, out of scope to fix inline during a
+  cutover-verification pass; also flags that the reconciler has a stall timeout for
+  0%-downloading but nothing analogous for a stuck `processing`/`staged`/`importing`/`scanning`
+  state, which is why this failure mode was invisible until manually investigated.
+
+**Disposable library:** left in place (not torn down) -- harmless, isolated from production,
+and useful for any future acquisition-flow testing without touching Scott's real library
+again. Its `LIBRARY_MAPPINGS_JSON` entry and ABS library row both still exist.
+
+**Cutover status: COMPLETE.** Production library mapping live, verified end-to-end with real
+data, `t1050` marked done.
