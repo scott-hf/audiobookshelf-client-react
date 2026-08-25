@@ -89,9 +89,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nativePlayer) return
     let cancelled = false
-    nativePlayer
-      .getState()
-      .then((snapshot) => {
+    // Calls the plugin directly (not `nativePlayer.getState()`, which only returns the
+    // in-memory snapshot already tracked from `playerState` events and is synchronous) -- this
+    // needs the async round trip to the native side to observe state restored before any
+    // `playerState` event has fired yet.
+    AbsAudioPlayerNative.getState()
+      .then((snapshot: PlayerSnapshot) => {
         if (cancelled || snapshot.status === 'idle' || !snapshot.itemId) return
         itemIdRef.current = snapshot.itemId
         setState(snapshot)
