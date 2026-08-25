@@ -4,12 +4,17 @@ import android.os.Bundle
 import android.webkit.WebSettings
 import com.getcapacitor.BridgeActivity
 import com.hellofriend.shelfdroid.plugins.AbsAudioPlayer
+import com.hellofriend.shelfdroid.plugins.AbsDatabase
+import com.hellofriend.shelfdroid.plugins.AbsFileSystem
 
 class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be registered before super.onCreate() so the WebView bridge sees it on first load.
         registerPlugin(SecureSessionPlugin::class.java)
         registerPlugin(AbsAudioPlayer::class.java)
+        // WI-1496 t800 Task 2: offline downloads' persistence + filesystem bridges.
+        registerPlugin(AbsDatabase::class.java)
+        registerPlugin(AbsFileSystem::class.java)
         super.onCreate(savedInstanceState)
 
         // ShelfDroid connects to a user-supplied, self-hosted Audiobookshelf server address,
