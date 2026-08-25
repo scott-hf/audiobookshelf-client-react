@@ -984,3 +984,22 @@ again. Its `LIBRARY_MAPPINGS_JSON` entry and ABS library row both still exist.
 
 **Cutover status: COMPLETE.** Production library mapping live, verified end-to-end with real
 data, `t1050` marked done.
+
+## 2026-08-25 — post-cutover follow-up (untracked-task work, committed)
+
+Two pieces of work that were left uncommitted in the tree after the cutover session were
+verified and landed:
+
+- `cac593cb` gateway CORS. The Capacitor client calls the gateway cross-origin
+  (`capacitor://localhost` / `https://localhost`) with a bearer token, so every browser
+  request previously died at the preflight. Adds `ALLOWED_ORIGINS` (default mirrors the
+  origins ABS itself allows), a strict allowlist via `@fastify/cors` with `credentials: false`,
+  and an `OPTIONS` bypass in the auth `onRequest` hook. New `src/cors.test.ts` (7 tests).
+- `ade5e5c1` ShelfDroid restyle onto the ABS web client's design system: theme tokens, fonts,
+  absicons, ported `ui/` primitives, shared hooks, a `next/link` shim, and `en-us` locale
+  strings; Tailwind v4 via `@tailwindcss/vite`; `@/*` and `next/link` aliases shared between
+  vite and vitest through `mobile/aliases.ts`. Replaces the hand-rolled `mobile/src/styles.css`.
+
+Evidence re-run directly this session: mobile `tsc -b --noEmit` clean, `vitest run` 58/58 in
+17 files, `vite build` clean (52 kB CSS / 419 kB JS); gateway suite 153/153 in 20 files.
+No device-level verification (unchanged gap — see t950/t650 notes).
