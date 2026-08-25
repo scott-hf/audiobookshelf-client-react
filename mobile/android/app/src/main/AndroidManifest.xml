@@ -24,7 +24,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Verified deep links (WI-1496 t900 Task 4). Placeholder host -- must match
+            <!-- Verified deep links (WI-1496 t900 Task 4). Placeholder host; must match
                  deploy/acquisition/assetlinks.json.example, never a real production hostname. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />

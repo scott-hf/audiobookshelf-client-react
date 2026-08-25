@@ -1,0 +1,75 @@
+# WI-1496 t900 Task 6 (unsigned CI slice). This workflow reads the four release-signing
+# secrets named below and passes them through to Gradle as env vars -- it never hardcodes a
+# value and never echoes a secret to logs. Signing itself is deferred to t950: until Scott adds
+# these four repository secrets, `mobile/android/app/build.gradle`'s guarded signingConfig
+# block (see its `hasReleaseSigningEnv` comment) stays disabled and `bundleRelease`/
+# `assembleRelease` below produce UNSIGNED artifacts. See mobile/RELEASE.md for the full
+# process and what "signed" requires.
+name: Android Release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: android-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # AGP 8.7.2 / capacitor-android require JDK 21 -- matches .github/workflows/android.yml's
+      # existing debug-build job.
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Mobile unit tests
+        run: corepack pnpm --filter @abs/mobile test
+
+      - name: Build mobile web bundle
+        run: corepack pnpm --filter @abs/mobile build
+
+      - name: Sync Capacitor Android project
+        run: corepack pnpm --filter @abs/mobile cap:sync
+
+      # ANDROID_KEYSTORE_PATH etc. are read straight from repository secrets (t950's job to
+      # populate) -- never a literal value here. When those secrets are absent (this workflow
+      # has never been run with them configured as of this task), build.gradle's guard leaves
+      # signingConfigs.release undefined and bundleRelease/assembleRelease still succeed, just
+      # unsigned.
+      - name: Gradle release build (unsigned unless keystore secrets are configured)
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_PATH }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew testDebugUnitTest lintRelease bundleRelease assembleRelease
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelfdroid-release
+          path: |
+            mobile/android/app/build/outputs/apk/release/app-release.apk
+            mobile/android/app/build/outputs/bundle/release/app-release.aab

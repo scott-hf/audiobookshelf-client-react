@@ -1,6 +1,15 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
+// WI-1496 t900 Task 6 (unsigned CI slice): the release signingConfig reads four env vars by
+// name (never a committed value -- see mobile/android/keystore.properties.example and
+// mobile/RELEASE.md). `file(System.getenv("ANDROID_KEYSTORE_PATH"))` throws at Gradle
+// config-eval time on a null path, so the whole signingConfigs.release block (and wiring it
+// into buildTypes.release) is guarded behind this flag -- it stays false in every environment
+// without the four secrets (this dev machine, `assembleDebug`/`testDebugUnitTest` in CI), and
+// only becomes true where CI injects the real t950 keystore secrets for a release build.
+def hasReleaseSigningEnv = System.getenv("ANDROID_KEYSTORE_PATH") != null
+
 android {
     namespace "com.hellofriend.shelfdroid"
     compileSdk rootProject.ext.compileSdkVersion
@@ -17,6 +26,16 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasReleaseSigningEnv) {
+            release {
+                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         debug {
             // Debug builds install alongside the release app and allow local (possibly
@@ -24,8 +43,15 @@ android {
             applicationIdSuffix ".debug"
         }
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigningEnv) {
+                signingConfig signingConfigs.release
+            }
+            // Unsigned in every environment without the t950 keystore secrets (this dev
+            // machine included) -- `bundleRelease`/`assembleRelease` still produce an artifact,
+            // just an unsigned one, matching t900's acceptance text verbatim.
         }
     }
     compileOptions {
