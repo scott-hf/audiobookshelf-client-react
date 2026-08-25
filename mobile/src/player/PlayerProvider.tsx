@@ -4,6 +4,8 @@ import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useSt
 import { useAuth } from '../auth/AuthProvider'
 import { useDownloads } from '../downloads/DownloadProvider'
 import AbsAudioPlayerNative from '../native/absAudioPlayerPlugin'
+import CastNative from '../native/castPlugin'
+import { createCastHandoffController, CastHandoffController, CastSessionSource } from './castHandoff'
 import { HtmlAudioPlayer } from './htmlAudioPlayer'
 import { createNativeAudioPlayer } from './nativeAudioPlayer'
 import { createNativeProgressSync, NativeProgressSync } from './nativeProgressSync'
@@ -31,6 +33,10 @@ export interface PlayerContextValue {
   jumpForward: (seconds?: number) => void
   jumpBackward: (seconds?: number) => void
   setSleepTimer: (seconds: number | null) => void
+  /** No-op on the web/dev-preview path -- Chromecast handoff (WI-1496 t900 Task 3) only applies
+   * to the native player. `connectCast` is a no-op if nothing is currently loaded. */
+  connectCast: () => Promise<void>
+  isCasting: () => boolean
 }
 
 export const PlayerContext = createContext<PlayerContextValue | null>(null)
@@ -47,12 +53,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const htmlPlayer = useMemo(() => (isNative ? null : new HtmlAudioPlayer({ api: client })), [client, isNative])
   const nativePlayer = useMemo(() => (isNative ? createNativeAudioPlayer(AbsAudioPlayerNative) : null), [isNative])
+  // WI-1496 t900 Task 3: built directly on the raw `AbsAudioPlayerPlugin` bridge (not the
+  // `nativePlayer` wrapper) -- the handoff controller needs the same low-level
+  // getState/pause/seek surface the bridge exposes, matching `castHandoff.ts`'s contract.
+  const castHandoff = useMemo<CastHandoffController | null>(
+    () => (isNative ? createCastHandoffController(AbsAudioPlayerNative, CastNative, () => castSourceRef.current) : null),
+    [isNative]
+  )
 
   const [state, setState] = useState<PlayerState>(INITIAL_PLAYER_STATE)
   const [rate, setRateState] = useState(1)
 
   const progressSyncRef = useRef<NativeProgressSync | null>(null)
   const itemIdRef = useRef<string | null>(null)
+  // WI-1496 t900 Task 3: the currently-loaded stream's Cast-load source, kept in lockstep with
+  // whatever was last handed to `nativePlayer.load()` (stream or offline) -- `castHandoff`'s
+  // `connectCast()` reads this instead of re-resolving a session, preserving the ONE ABS
+  // session invariant.
+  const castSourceRef = useRef<CastSessionSource | null>(null)
 
   // Web path: HtmlAudioPlayer owns its own PlayerState and sync timer -- just relay it.
   useEffect(() => {
@@ -125,6 +143,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       progressSyncRef.current = null
     }
     itemIdRef.current = null
+    castSourceRef.current = null
     setState({ ...INITIAL_PLAYER_STATE })
   }
 
@@ -171,6 +190,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       try {
         if (source.kind === 'offline') {
+          // WI-1496 t900 Task 3: offline tracks are local file/content URIs -- not reachable by
+          // a Cast receiver (a separate device on the network), so Cast handoff is unavailable
+          // for offline playback until a local HTTP relay exists. Left null rather than handed
+          // to `cast.load()` with a URI the receiver could never fetch.
+          castSourceRef.current = null
           await loadOfflineTracks(itemId, source.tracks)
           await nativePlayer.play()
           return
@@ -189,6 +213,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
         progressSyncRef.current = createNativeProgressSync(client, session.id)
         await nativePlayer.load({ session, accessToken, serverUrl })
+        // WI-1496 t900 Task 3: only the first track's URL is castable -- multi-track (chaptered)
+        // sessions would need a Cast queue to hand off every track, out of this task's scope
+        // (see report GAPS). Single-track sessions (the common case) hand off correctly.
+        const firstTrack = [...session.audioTracks].sort((a, b) => a.index - b.index)[0]
+        castSourceRef.current = firstTrack
+          ? {
+              contentUrl: /^https?:\/\//.test(firstTrack.contentUrl) ? firstTrack.contentUrl : `${serverUrl}${firstTrack.contentUrl}`,
+              contentType: 'audio/mpeg',
+              title: itemId,
+              accessToken
+            }
+          : null
         await nativePlayer.play()
       } catch (error) {
         setState({ status: 'error', itemId, currentTime: 0, duration: 0, error: error instanceof Error ? error.message : 'Playback failed' })
@@ -247,6 +283,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     seek(Math.max(0, state.currentTime - seconds))
   }
 
+  async function connectCast(): Promise<void> {
+    await castHandoff?.connectCast()
+  }
+
+  function isCasting(): boolean {
+    return castHandoff?.isCasting() ?? false
+  }
+
   function setSleepTimer(seconds: number | null): void {
     if (nativePlayer) {
       void nativePlayer.setSleepTimer(seconds)
@@ -255,9 +299,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }
 
   const value = useMemo<PlayerContextValue>(
-    () => ({ state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer }),
+    () => ({ state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer, connectCast, isCasting }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state, rate, htmlPlayer, nativePlayer, client]
+    [state, rate, htmlPlayer, nativePlayer, castHandoff, client]
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

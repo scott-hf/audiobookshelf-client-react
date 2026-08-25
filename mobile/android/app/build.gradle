@@ -59,6 +59,13 @@ dependencies {
     implementation "com.google.android.exoplayer:exoplayer-core:$exoplayer_version"
     implementation "com.google.android.exoplayer:exoplayer-ui:$exoplayer_version"
     implementation "androidx.media:media:$androidxMediaVersion"
+    // Chromecast handoff (WI-1496 t900 Task 3). extension-cast provides the OFFICIAL, tested
+    // exoplayer2 CastPlayer/Timeline -- CastManager.kt/CastPlayer.kt deliberately build on this
+    // artifact rather than hand-porting the donor app's local fork of it (see CastManager.kt's
+    // class doc).
+    implementation "com.google.android.exoplayer:extension-cast:$exoplayer_version"
+    implementation "com.google.android.gms:play-services-cast-framework:21.3.0"
+    implementation "androidx.mediarouter:mediarouter:1.6.0"
     // SAF folder picking for offline downloads (WI-1496 t800 Task 2) -- ActivityResult contract
     // AbsFileSystem's chooseDownloadFolder() uses via Plugin.startActivityForResult.
     implementation "androidx.activity:activity-ktx:$androidxActivityVersion"

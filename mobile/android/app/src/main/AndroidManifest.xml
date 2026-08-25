@@ -46,6 +46,11 @@
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
 
+        <!-- Chromecast handoff (WI-1496 t900 Task 3). -->
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.hellofriend.shelfdroid.CastOptionsProvider" />
+
         <!-- Foreground offline-download transfer service (WI-1496 t800 Task 3). -->
         <service
             android:name=".services.DownloadService"
