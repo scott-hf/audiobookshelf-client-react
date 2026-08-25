@@ -47,6 +47,21 @@ class MediaSessionCallback(private val service: PlayerNotificationService) : Med
         service.skipToPrevious()
     }
 
+    /** Android Auto browse tap (WI-1496 t900 Task 1) -- resolves via
+     * [PlayerNotificationService.preparePlaybackFromMediaId], which forwards to the JS bridge;
+     * this service never resolves/loads a session itself. */
+    override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
+        Log.d(tag, "onPlayFromMediaId $mediaId")
+        mediaId?.let { service.preparePlaybackFromMediaId(it) }
+    }
+
+    /** Android Auto voice search (WI-1496 t900 Task 1). Read-only against already-known/cached
+     * items -- never starts acquisition. */
+    override fun onPlayFromSearch(query: String?, extras: Bundle?) {
+        Log.d(tag, "onPlayFromSearch $query")
+        query?.let { service.preparePlaybackFromSearch(it) }
+    }
+
     override fun onCustomAction(action: String?, extras: Bundle?) {
         when (action) {
             CUSTOM_ACTION_JUMP_FORWARD -> service.jumpForward()

@@ -52,6 +52,38 @@ class PlayerNotificationService : Service() {
 
     var stateEmitter: PlaybackStateEmitter? = null
 
+    /** Android Auto browse tree (WI-1496 t900 Task 1). Null until the JS side supplies a
+     * [BrowseRepository] (cached ABS shelves + t800's offline catalog) via [setBrowseRepository]
+     * -- browsing/voice search are unavailable before that first call, same as any other
+     * cache-dependent feature. */
+    private var browseTree: BrowseTree? = null
+
+    /** Notified when Android Auto resolves a browse/search request to an already-known/cached
+     * mediaId. This service never loads it itself (see [load]'s doc note); forwards to the JS
+     * bridge, which owns ABS session-resolution + `load()`, exactly like any other play action. */
+    var playbackRequestListener: PlaybackRequestListener? = null
+        set(value) {
+            field = value
+            mediaSessionPlaybackPreparer = browseTree?.let { tree -> value?.let { MediaSessionPlaybackPreparer(tree, it) } }
+        }
+
+    private var mediaSessionPlaybackPreparer: MediaSessionPlaybackPreparer? = null
+
+    fun setBrowseRepository(repository: BrowseRepository) {
+        val tree = BrowseTree(repository)
+        browseTree = tree
+        mediaSessionPlaybackPreparer = playbackRequestListener?.let { MediaSessionPlaybackPreparer(tree, it) }
+    }
+
+    /** Called from [MediaSessionCallback.onPlayFromMediaId]. No-op (returns false) until
+     * [setBrowseRepository] and [playbackRequestListener] have both been set. */
+    fun preparePlaybackFromMediaId(mediaId: String): Boolean =
+        mediaSessionPlaybackPreparer?.onPrepareFromMediaId(mediaId) ?: false
+
+    /** Called from [MediaSessionCallback.onPlayFromSearch] (Android Auto voice search). */
+    fun preparePlaybackFromSearch(query: String): Boolean =
+        mediaSessionPlaybackPreparer?.onPrepareFromSearch(query) ?: false
+
     lateinit var player: ExoPlayer
         private set
     private lateinit var mediaSession: MediaSessionCompat

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WI-1496 t900 Task 1: declares media-app support for Android Auto so the platform will show
+     ShelfDroid's media-browser session in-car. Referenced from AndroidManifest.xml's
+     com.google.android.gms.car.application meta-data. -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

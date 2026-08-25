@@ -41,6 +41,11 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Android Auto support (WI-1496 t900 Task 1). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Foreground offline-download transfer service (WI-1496 t800 Task 3). -->
         <service
             android:name=".services.DownloadService"
