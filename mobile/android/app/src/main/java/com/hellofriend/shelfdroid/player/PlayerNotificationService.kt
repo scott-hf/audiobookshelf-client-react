@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.os.Binder
@@ -16,6 +17,8 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media.session.MediaButtonReceiver
+import com.hellofriend.shelfdroid.MediaPlayerWidget
+import com.hellofriend.shelfdroid.PlayerCommand
 import com.hellofriend.shelfdroid.managers.SleepTimerManager
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.ExoPlayer
@@ -122,6 +125,19 @@ class PlayerNotificationService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    /** Routes the home-screen widget's explicit service `PendingIntent`s (WI-1496 t900 Task 2)
+     * to the existing play/pause/jump command surface -- [MediaPlayerWidget.commandFor] is the
+     * single source of truth for action-string -> command mapping. */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (MediaPlayerWidget.commandFor(intent?.action)) {
+            PlayerCommand.PLAY_PAUSE -> if (player.isPlaying) pause() else play()
+            PlayerCommand.JUMP_BACK -> jumpBackward()
+            PlayerCommand.JUMP_FORWARD -> jumpForward()
+            null -> Unit
+        }
+        return START_NOT_STICKY
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -324,8 +340,25 @@ class PlayerNotificationService : Service() {
         stateEmitter?.onPlayerState(result.snapshot)
         updateMediaSessionPlaybackState(result.snapshot)
         persistRecoveryState(result.snapshot)
+        notifyWidgets(result.snapshot)
         if (result.stopForeground) {
             stopForeground(true)
+        }
+    }
+
+    /** Pushes the latest snapshot to every home-screen widget instance (WI-1496 t900 Task 2) --
+     * a no-op when zero widgets are placed ([MediaPlayerWidget.widgetIds] returns an empty
+     * array). See [MediaPlayerWidget]'s class doc for the title/author placeholder-text gap. */
+    private fun notifyWidgets(snapshot: PlayerSnapshot) {
+        val appWidgetManager = AppWidgetManager.getInstance(this)
+        MediaPlayerWidget.widgetIds(this).forEach { id ->
+            MediaPlayerWidget.updateAppWidget(
+                context = this,
+                appWidgetManager = appWidgetManager,
+                appWidgetId = id,
+                isPlaying = snapshot.status == PlayerStatus.PLAYING,
+                hasSession = currentSession != null
+            )
         }
     }
 
