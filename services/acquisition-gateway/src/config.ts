@@ -10,6 +10,12 @@ const EnvSchema = z.object({
   GATEWAY_DB_PATH: z.string().min(1),
   STAGING_ROOT: z.string().min(1),
   LIBRARY_MAPPINGS_JSON: z.string().min(2),
+  // Browser origins allowed to call the gateway cross-origin. The mobile client is a pure
+  // bearer-token caller from a Capacitor WebView (capacitor://localhost, or https://localhost
+  // with androidScheme: 'https'), never same-origin, so without this no browser request ever
+  // reaches a route -- the preflight fails first. Defaults mirror the origins the ABS server
+  // itself allows by default; set the variable to override, or to '' to disable CORS entirely.
+  ALLOWED_ORIGINS: z.string().default('capacitor://localhost,http://localhost,https://localhost'),
   SEARCH_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   // TorBox with download_uncached accepts any hash and can sit at 0 B forever (FND-00410);
   // this is the reconciler's stall-to-failed timeout for that case (WI-1496 correction #4).
@@ -42,6 +48,8 @@ export type GatewayEnv = z.infer<typeof EnvSchema>
 export interface GatewayConfig extends GatewayEnv {
   stagingRoot: string
   libraries: Map<string, string>
+  /** Parsed ALLOWED_ORIGINS. Empty means "reject every cross-origin browser caller". */
+  allowedOrigins: string[]
 }
 
 // Deliberately wider than NodeJS.ProcessEnv: `process.env` satisfies this, and so does a
@@ -58,5 +66,8 @@ export function loadConfig(input: Record<string, string | undefined>): GatewayCo
       throw new Error(`staging/library roots overlap: ${staging} and ${resolved}`)
     }
   }
-  return { ...env, stagingRoot: staging, libraries }
+  const allowedOrigins = env.ALLOWED_ORIGINS.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+  return { ...env, stagingRoot: staging, libraries, allowedOrigins }
 }

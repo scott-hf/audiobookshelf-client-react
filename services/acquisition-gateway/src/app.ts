@@ -1,3 +1,4 @@
+import cors from '@fastify/cors'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { GatewayConfig } from './config'
 import { createAbsAuth, validateAbsUser, type AbsUser } from './auth/absAuth'
@@ -49,6 +50,26 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const fetcher = options.fetcher ?? fetch
   const app = Fastify({ logger: options.logger ?? true })
 
+  // Registered before any other hook so a preflight is answered without touching auth.
+  //
+  // Strict allowlist, never a reflected wildcard: these routes are authenticated and act on a
+  // user's library. `credentials` stays false -- the mobile client is bearer-token only (see
+  // mobile/src/api/acquisitionClient.ts, credentials: 'omit'), and enabling it here would let
+  // a browser attach the ABS cookie to a cross-origin call.
+  const { allowedOrigins } = options.config
+  void app.register(cors, {
+    origin: (origin, callback) => {
+      // No Origin header at all = same-origin, curl, or a native (non-browser) client.
+      // CORS does not apply, so let it through and let auth decide.
+      if (!origin) return callback(null, true)
+      callback(null, allowedOrigins.includes(origin))
+    },
+    credentials: false,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['authorization', 'content-type', 'accept'],
+    maxAge: 600
+  })
+
   const auth = createAbsAuth({
     validate: (token) => validateAbsUser(token, options.config.ABS_INTERNAL_URL, fetcher)
   })
@@ -60,6 +81,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.get('/healthz', async () => ({ ok: true }))
 
   app.addHook('onRequest', async (request, reply) => {
+    // A CORS preflight carries no Authorization header by definition, so authenticating it
+    // would 401 every cross-origin request before the real call is ever made. Skipping it here
+    // (rather than relying on plugin hook ordering) keeps that correct regardless of how
+    // @fastify/cors registers itself.
+    if (request.method === 'OPTIONS') return
     if (!request.url.startsWith(AUTHENTICATED_PREFIX)) return
     try {
       request.absUser = await auth({
