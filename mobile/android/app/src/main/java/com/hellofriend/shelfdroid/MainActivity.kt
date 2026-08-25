@@ -3,11 +3,13 @@ package com.hellofriend.shelfdroid
 import android.os.Bundle
 import android.webkit.WebSettings
 import com.getcapacitor.BridgeActivity
+import com.hellofriend.shelfdroid.plugins.AbsAudioPlayer
 
 class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be registered before super.onCreate() so the WebView bridge sees it on first load.
         registerPlugin(SecureSessionPlugin::class.java)
+        registerPlugin(AbsAudioPlayer::class.java)
         super.onCreate(savedInstanceState)
 
         // ShelfDroid connects to a user-supplied, self-hosted Audiobookshelf server address,
