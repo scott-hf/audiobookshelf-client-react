@@ -26,7 +26,12 @@ private class FakeRepository : DownloadRepository {
     override fun downloads(): List<DownloadItem> = items.values.toList()
     override fun save(item: DownloadItem) { items[item.id] = item }
     override fun remove(id: String) { items.remove(id) }
-    override fun saveLocalItem(item: LocalLibraryItem) { localItems.add(item) }
+    override fun saveLocalItem(item: LocalLibraryItem) {
+        localItems.removeAll { it.libraryItemId == item.libraryItemId }
+        localItems.add(item)
+    }
+    override fun localItems(): List<LocalLibraryItem> = localItems.toList()
+    override fun removeLocalItem(libraryItemId: String) { localItems.removeAll { it.libraryItemId == libraryItemId } }
 }
 
 class DownloadItemManagerTest {
@@ -57,16 +62,29 @@ class DownloadItemManagerTest {
         token: String? = "token-1",
         connectivity: ConnectivityPolicy = ConnectivityPolicy { true },
         diskSpace: DiskSpacePolicy = DiskSpacePolicy { true },
-        refreshToken: (String) -> String? = { token }
+        refreshToken: (String) -> String? = { token },
+        tokenProvider: ((String) -> String?)? = null,
+        listener: DownloadEventListener = DownloadEventListener.NOOP,
+        maxConcurrentParts: Int = DownloadItemManager.MAX_CONCURRENT_PARTS
     ) = DownloadItemManager(
         repository = repository,
         httpClient = client,
-        tokenProvider = { token },
+        tokenProvider = tokenProvider ?: { token },
         refreshToken = refreshToken,
         connectivity = connectivity,
         diskSpace = diskSpace,
-        scope = CoroutineScope(SupervisorJob())
+        listener = listener,
+        scope = CoroutineScope(SupervisorJob()),
+        maxConcurrentParts = maxConcurrentParts
     )
+
+    private fun completedPart(id: String): DownloadItemPart {
+        val final = File(tempDir, "final/$id.mp3").apply {
+            parentFile?.mkdirs()
+            writeText("audio")
+        }
+        return part(id, contentLength = 5L, state = "complete").copy(completed = true, bytesDownloaded = 5L, finalDestinationPath = final.absolutePath)
+    }
 
     private fun part(id: String, existingBytes: Long = 0L, contentLength: Long = -1L, state: String = "queued"): DownloadItemPart {
         val staging = File(tempDir, "$id.mp3.part")
@@ -224,5 +242,254 @@ class DownloadItemManagerTest {
         assertFalse(stagingFile.exists())
         assertTrue(finalFile.exists())
         assertEquals("final-bytes", finalFile.readText())
+    }
+
+    // ---- Fix 1: deleted books must not resurrect ----
+
+    @Test
+    fun restoreSkipsAllCompletedRowWithNoLocalItem() = runTest {
+        repository.save(item(completedPart("p1")).also { it.state = "complete" })
+
+        val manager = manager()
+        manager.restoreQueue()
+        manager.awaitIdle()
+
+        assertEquals(null, manager.item("item-1"))
+        assertTrue("stale row must be dropped from the persisted queue", repository.items.isEmpty())
+        assertTrue("restore must not re-register a book with no files", repository.localItems.isEmpty())
+    }
+
+    @Test
+    fun restoreKeepsCompletedRowThatHasALocalItemWithoutFinishingItTwice() = runTest {
+        repository.save(item(completedPart("p1")).also { it.state = "complete" })
+        repository.saveLocalItem(LocalLibraryItem("lib-1", "conn-1", tempDir.absolutePath, "{}", 1L))
+        var completeEvents = 0
+
+        val manager = manager(listener = object : DownloadEventListener {
+            override fun onItemComplete(item: DownloadItem) {
+                completeEvents++
+            }
+        })
+        manager.restoreQueue()
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        assertEquals(0, completeEvents)
+        assertEquals(1, repository.localItems.size)
+    }
+
+    @Test
+    fun restoreStillFinishesAnItemInterruptedBetweenLastPartAndLocalRow() = runTest {
+        // Every file landed but the process died before finishItem ran: state is not "complete".
+        repository.save(item(completedPart("p1")))
+
+        val manager = manager()
+        manager.restoreQueue()
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        assertEquals(1, repository.localItems.size)
+    }
+
+    @Test
+    fun removeDownloadedThenRestartDoesNotResurrectAndRedownloadWorks() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        val first = part("p1", contentLength = 5L)
+        val manager = manager()
+        manager.enqueue(item(first))
+        manager.awaitIdle()
+        assertEquals(1, repository.localItems.size)
+        assertTrue(File(first.finalDestinationPath).exists())
+
+        manager.removeDownloaded("lib-1")
+
+        assertEquals(null, manager.item("item-1"))
+        assertTrue(repository.items.isEmpty())
+        assertTrue(repository.localItems.isEmpty())
+        assertFalse(File(first.finalDestinationPath).exists())
+
+        // "Restart": a fresh manager over the same persisted state sees nothing to restore.
+        val restarted = manager()
+        restarted.restoreQueue()
+        restarted.awaitIdle()
+        assertEquals(null, restarted.item("item-1"))
+        assertTrue(repository.localItems.isEmpty())
+
+        // Re-download of the same id is no longer blocked by a stale queue entry.
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        restarted.enqueue(item(part("p1", contentLength = 5L)))
+        restarted.awaitIdle()
+        assertEquals("complete", restarted.item("item-1")?.state)
+        assertEquals(1, repository.localItems.size)
+    }
+
+    @Test
+    fun enqueueOverACompletedRowStartsOver() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        val manager = manager()
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("again"))
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+
+        assertEquals(2, server.requestCount)
+        assertEquals("complete", manager.item("item-1")?.state)
+    }
+
+    // ---- Fix 4: resume of a failed item ----
+
+    @Test
+    fun resumeRequeuesAFailedPartAndClearsTheFailure() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        val manager = manager()
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+        assertEquals("failed", manager.item("item-1")?.state)
+        assertTrue(manager.item("item-1")?.terminalFailureAt != null)
+
+        manager.resume("item-1")
+        manager.awaitIdle()
+
+        val resumed = manager.item("item-1")!!
+        assertEquals("complete", resumed.state)
+        assertEquals(null, resumed.error)
+        assertEquals(null, resumed.terminalFailureAt)
+        assertEquals(1, repository.localItems.size)
+    }
+
+    // ---- Fix 5: tokens after a restart ----
+
+    @Test
+    fun noTokenFailsFastWithoutSendingABearerlessRequest() = runTest {
+        val manager = manager(tokenProvider = { null })
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+
+        assertEquals(0, server.requestCount)
+        assertEquals("failed", manager.item("item-1")?.state)
+        assertEquals("Authentication failed", manager.item("item-1")?.error)
+    }
+
+    @Test
+    fun reEnqueueOfAFailedItemPicksUpTheFreshTokenAndCompletes() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        var token: String? = null
+        val manager = manager(tokenProvider = { token }, refreshToken = { token })
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+        assertEquals("failed", manager.item("item-1")?.state)
+
+        token = "fresh"
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+
+        assertEquals("Bearer fresh", server.takeRequest().getHeader("Authorization"))
+        assertEquals("complete", manager.item("item-1")?.state)
+    }
+
+    @Test
+    fun restoredQueueUsesTheTokenProviderNotAPersistedToken() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        repository.save(item(part("p1", contentLength = 5L)))
+
+        val manager = manager(tokenProvider = { "from-vault" })
+        manager.restoreQueue()
+        manager.awaitIdle()
+
+        assertEquals("Bearer from-vault", server.takeRequest().getHeader("Authorization"))
+    }
+
+    // ---- Fix 6: parked parts retry when the network comes back ----
+
+    @Test
+    fun retryWaitingRestartsPartsParkedOnTheNetwork() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        var online = false
+        val manager = manager(connectivity = ConnectivityPolicy { online })
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+        assertEquals("waiting_for_network", manager.item("item-1")?.state)
+
+        online = true
+        manager.retryWaiting()
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun retryWaitingKeepsPartsParkedWhileStillOffline() = runTest {
+        val manager = manager(connectivity = ConnectivityPolicy { false })
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+        manager.retryWaiting()
+        manager.awaitIdle()
+
+        assertEquals("waiting_for_network", manager.item("item-1")?.parts?.first()?.state)
+        assertEquals(0, server.requestCount)
+    }
+
+    // ---- Fix 7: progress during a transfer ----
+
+    @Test
+    fun progressIsEmittedWhileAPartIsStillTransferring() = runTest {
+        val body = ByteArray(200_000) { 7 }
+        server.enqueue(MockResponse().setResponseCode(200).setBody(okio.Buffer().write(body)))
+        val seen = java.util.Collections.synchronizedList(mutableListOf<Triple<String, Long, Long>>())
+        val manager = manager(listener = object : DownloadEventListener {
+            override fun onItemUpdated(item: DownloadItem) {
+                seen.add(Triple(item.state, item.bytesDownloaded, item.totalBytes))
+            }
+        })
+        // contentLength unknown up front: the percentage must come from the response header.
+        manager.enqueue(item(part("p1")))
+        manager.awaitIdle()
+
+        assertTrue(
+            "expected a running update with a known total before completion, saw $seen",
+            seen.any { (state, bytes, total) -> state == "running" && bytes > 0L && total == body.size.toLong() }
+        )
+    }
+
+    // ---- Fix 8: concurrency cap, size verification ----
+
+    @Test
+    fun concurrentPartTransfersAreCapped() = runTest {
+        val active = java.util.concurrent.atomic.AtomicInteger(0)
+        val peak = java.util.concurrent.atomic.AtomicInteger(0)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val now = active.incrementAndGet()
+                peak.updateAndGet { maxOf(it, now) }
+                Thread.sleep(150)
+                active.decrementAndGet()
+                return MockResponse().setResponseCode(200).setBody("hello")
+            }
+        }
+        val parts = (1..6).map { part("p$it", contentLength = 5L) }.toTypedArray()
+        val manager = manager(maxConcurrentParts = 2)
+        manager.enqueue(item(*parts))
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        assertTrue("peak concurrency ${peak.get()} exceeded the cap", peak.get() <= 2)
+    }
+
+    @Test
+    fun responseWithNoSizeAnywhereCompletesButStaysMarkedUnverified() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setChunkedBody("chunked-body", 4))
+        val manager = manager()
+        manager.enqueue(item(part("p1")))
+        manager.awaitIdle()
+
+        val done = manager.item("item-1")!!
+        assertEquals("complete", done.state)
+        assertEquals("part keeps contentLength -1 so the lack of a check stays explicit", -1L, done.parts.first().contentLength)
+        assertTrue(repository.localItems.first().manifestJson.contains("\"sizeVerified\":false"))
+        assertEquals(done.bytesDownloaded, done.totalBytes)
     }
 }

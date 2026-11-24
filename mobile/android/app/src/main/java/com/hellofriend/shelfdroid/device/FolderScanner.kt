@@ -1,6 +1,9 @@
 package com.hellofriend.shelfdroid.device
 
+import com.hellofriend.shelfdroid.data.LocalLibraryItem
 import com.hellofriend.shelfdroid.models.DownloadItemPart
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.File
 
 /** One file found while scanning a completed download's storage location. */
@@ -46,6 +49,48 @@ object FolderScanner {
      * storage, or external storage was revoked -- so the offline catalog can flag/prune a
      * `LocalLibraryItem` whose files no longer back it up. */
     fun isPartFileMissing(part: DownloadItemPart): Boolean = !File(part.finalDestinationPath).exists()
+
+    /** True when [part]'s file is present, non-empty and -- when the expected size is known --
+     * exactly that size. A truncated file (killed copy, partial restore) is not "downloaded". */
+    fun isPartFileIntact(part: DownloadItemPart): Boolean {
+        if (isPartFileMissing(part)) return false
+        val file = File(part.finalDestinationPath)
+        if (!file.isFile) return false
+        val length = file.length()
+        if (length <= 0L) return false
+        return part.contentLength <= 0L || length == part.contentLength
+    }
+
+    /** Whether every audio file a completed [LocalLibraryItem]'s manifest lists is still on
+     * disk at its recorded size, so the offline library never reports a book as downloaded when
+     * its files are gone or truncated. Manifests without a track list (older builds) fall back to
+     * "the item folder still holds any audio file". SAF (`content://`) folders cannot be checked
+     * through `java.io.File` and are assumed intact. */
+    fun isLocalItemIntact(item: LocalLibraryItem): Boolean {
+        if (item.folderUri.startsWith("content://")) return true
+        val tracks = try {
+            JSONObject(item.manifestJson).optJSONArray("tracks")
+        } catch (e: JSONException) {
+            null
+        }
+        if (tracks == null || tracks.length() == 0) return scanInternalFolder(File(item.folderUri)).isNotEmpty()
+        for (i in 0 until tracks.length()) {
+            val track = tracks.optJSONObject(i) ?: return false
+            val path = track.optString("path", "")
+            if (path.isEmpty()) return false
+            val part = DownloadItemPart(
+                id = "${item.libraryItemId}-$i",
+                downloadItemId = item.libraryItemId,
+                trackIndex = track.optInt("trackIndex", i),
+                filename = track.optString("filename", File(path).name),
+                serverPath = "",
+                finalDestinationPath = path,
+                contentLength = if (track.has("size")) track.optLong("size", -1L) else -1L
+            )
+            if (!isPartFileIntact(part)) return false
+        }
+        return true
+    }
 
     private val AUDIO_EXTENSIONS = listOf(".mp3", ".m4a", ".m4b", ".aac", ".flac", ".ogg", ".opus", ".wav")
 }

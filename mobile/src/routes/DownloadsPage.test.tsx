@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +20,9 @@ function emit(eventName: string, event: RawDownloadEvent) {
 }
 
 const enqueueMock = vi.fn().mockResolvedValue({ id: 'book-1' })
+const removeMock = vi.fn().mockResolvedValue(undefined)
+const setWifiOnlyMock = vi.fn().mockResolvedValue(undefined)
+const listLocalItemsMock = vi.fn()
 
 vi.mock('@capacitor/core', async () => {
   const actual = await vi.importActual<typeof import('@capacitor/core')>('@capacitor/core')
@@ -32,7 +35,8 @@ vi.mock('../native/absDownloaderPlugin', () => ({
     pause: vi.fn().mockResolvedValue(undefined),
     resume: vi.fn().mockResolvedValue(undefined),
     cancel: vi.fn().mockResolvedValue(undefined),
-    remove: vi.fn().mockResolvedValue(undefined),
+    remove: (options: unknown) => removeMock(options),
+    setWifiOnly: (options: unknown) => setWifiOnlyMock(options),
     listQueue: vi.fn().mockResolvedValue({ items: [] }),
     addListener: (eventName: string, listener: Listener) => {
       listeners[eventName] = listeners[eventName] ?? []
@@ -44,7 +48,7 @@ vi.mock('../native/absDownloaderPlugin', () => ({
 
 vi.mock('../native/absFileSystemPlugin', () => ({
   default: {
-    listLocalItems: vi.fn().mockResolvedValue({ items: [] }),
+    listLocalItems: () => listLocalItemsMock(),
     chooseDownloadFolder: vi.fn().mockResolvedValue(null),
     deleteLocalItem: vi.fn().mockResolvedValue(undefined)
   }
@@ -87,6 +91,9 @@ function renderApp(client: Partial<AbsClient>) {
 describe('DownloadsPage', () => {
   beforeEach(() => {
     enqueueMock.mockClear()
+    removeMock.mockClear()
+    setWifiOnlyMock.mockClear()
+    listLocalItemsMock.mockReset().mockResolvedValue({ items: [] })
     listeners.downloadProgress = []
     listeners.downloadComplete = []
     listeners.downloadFailed = []
@@ -120,8 +127,7 @@ describe('DownloadsPage', () => {
       error: null
     })
 
-    const absFileSystem = (await import('../native/absFileSystemPlugin')).default
-    ;(absFileSystem.listLocalItems as ReturnType<typeof vi.fn>).mockResolvedValue({
+    listLocalItemsMock.mockResolvedValue({
       items: [{ libraryItemId: 'book-1', serverConnectionId: 'https://books.test', folderUri: '/downloads/book-1', manifestJson: '{"title":"Project Hail Mary"}', completedAt: 1 }]
     })
 
@@ -147,7 +153,122 @@ describe('DownloadsPage', () => {
       </AuthContext.Provider>
     )
 
-    expect(await screen.findByText('Project Hail Mary')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Play offline' })).toBeEnabled()
+    // The book title is also on screen from the first render tree, so wait on the offline row itself.
+    expect(await screen.findByRole('button', { name: 'Play offline' })).toBeEnabled()
+  })
+
+  it('closes the play session it opened and only asks for direct-file formats', async () => {
+    const user = userEvent.setup()
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    const startSession = vi.fn().mockResolvedValue(session())
+    renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession })
+
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+
+    expect(enqueueMock).toHaveBeenCalledTimes(1)
+    const options = startSession.mock.calls[0][1] as { supportedMimeTypes: string[]; forceDirectPlay: boolean }
+    expect(options.supportedMimeTypes).not.toContain('application/vnd.apple.mpegurl')
+    expect(options.forceDirectPlay).toBe(true)
+    expect(closeSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ timeListened: 0 }))
+  })
+
+  it('refuses a session that only offers an HLS playlist and still closes it', async () => {
+    const user = userEvent.setup()
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    const hls: AbsPlaybackSession = { id: 'session-hls', currentTime: 0, audioTracks: [{ index: 0, contentUrl: '/hls/session-hls/output.m3u8', duration: 3600 }] }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession: vi.fn().mockResolvedValue(hls), closeSession })
+
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+
+    expect(enqueueMock).not.toHaveBeenCalled()
+    expect(closeSession).toHaveBeenCalledWith('session-hls', expect.anything())
+    consoleError.mockRestore()
+  })
+
+  it('pushes the persisted Wi-Fi-only preference to the native policy before enqueueing', async () => {
+    const user = userEvent.setup()
+    window.localStorage.setItem('shelfdroid.settings', JSON.stringify({ wifiOnly: true }))
+    renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession: vi.fn().mockResolvedValue(session()), closeSession: vi.fn().mockResolvedValue(undefined) })
+
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+
+    expect(setWifiOnlyMock).toHaveBeenCalledWith({ wifiOnly: true })
+    window.localStorage.removeItem('shelfdroid.settings')
+  })
+
+  it('lets a cancelled or failed download be started again', async () => {
+    const user = userEvent.setup()
+    const startSession = vi.fn().mockResolvedValue(session())
+    renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession: vi.fn().mockResolvedValue(undefined) })
+
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    expect(enqueueMock).toHaveBeenCalledTimes(1)
+
+    act(() => emit('downloadProgress', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 0, totalBytes: 0, state: 'running' }))
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    expect(enqueueMock).toHaveBeenCalledTimes(1) // still in flight: deduped
+
+    act(() => emit('downloadProgress', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 0, totalBytes: 0, state: 'cancelled' }))
+    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    expect(enqueueMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('deletes an offline book after confirmation and lets it be downloaded again', async () => {
+    const user = userEvent.setup()
+    listLocalItemsMock.mockResolvedValue({
+      items: [{ libraryItemId: 'book-1', serverConnectionId: 'https://books.test', folderUri: '/downloads/book-1', manifestJson: '{"title":"Project Hail Mary"}', completedAt: 1 }]
+    })
+    render(
+      <AuthContext.Provider
+        value={{ state: { status: 'authenticated', serverUrl: 'https://books.test' }, client: withClientDefaults({}), acquisitionClient: null, login: vi.fn(), logout: vi.fn() }}
+      >
+        <DownloadProvider>
+          <MemoryRouter initialEntries={['/downloads']}>
+            <Routes>
+              <Route path="/downloads" element={<DownloadsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </DownloadProvider>
+      </AuthContext.Provider>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Delete Project Hail Mary' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Delete "Project Hail Mary" from this device?')
+    expect(removeMock).not.toHaveBeenCalled()
+
+    // After the native delete the catalog no longer lists the book.
+    listLocalItemsMock.mockResolvedValue({ items: [] })
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }))
+
+    expect(removeMock).toHaveBeenCalledWith({ libraryItemId: 'book-1' })
+    expect(await screen.findByText('Nothing downloaded yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('keeps the book when the delete confirmation is dismissed', async () => {
+    const user = userEvent.setup()
+    listLocalItemsMock.mockResolvedValue({
+      items: [{ libraryItemId: 'book-1', serverConnectionId: 'https://books.test', folderUri: '/downloads/book-1', manifestJson: '{"title":"Project Hail Mary"}', completedAt: 1 }]
+    })
+    render(
+      <AuthContext.Provider
+        value={{ state: { status: 'authenticated', serverUrl: 'https://books.test' }, client: withClientDefaults({}), acquisitionClient: null, login: vi.fn(), logout: vi.fn() }}
+      >
+        <DownloadProvider>
+          <MemoryRouter initialEntries={['/downloads']}>
+            <Routes>
+              <Route path="/downloads" element={<DownloadsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </DownloadProvider>
+      </AuthContext.Provider>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Delete Project Hail Mary' }))
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
+
+    expect(removeMock).not.toHaveBeenCalled()
+    expect(screen.getByText('Project Hail Mary')).toBeInTheDocument()
   })
 })

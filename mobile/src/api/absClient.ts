@@ -10,6 +10,28 @@ export class AbsApiError extends Error {
   }
 }
 
+/** Upper bound for an ordinary ABS API call. Without one, a dead connection leaves the awaiting
+ * UI (e.g. the player's "Loading..." state) hanging until the OS gives up, which can be minutes. */
+export const REQUEST_TIMEOUT_MS = 10_000
+
+/** Starting a playback session makes the server open/probe the item, which is legitimately slower
+ * than a metadata fetch on large libraries -- give it more headroom than [REQUEST_TIMEOUT_MS]. */
+export const SESSION_START_TIMEOUT_MS = 20_000
+
+/** Aborts when either input does. Hand-rolled rather than `AbortSignal.any`, which older Android
+ * WebViews (pre-Chrome 116) lack; `AbortSignal.timeout` (Chrome 103) is the only newer API used. */
+function mergeSignals(first: AbortSignal, second: AbortSignal): AbortSignal {
+  const controller = new AbortController()
+  const abort = (source: AbortSignal) => () => controller.abort(source.reason)
+  if (first.aborted) controller.abort(first.reason)
+  else if (second.aborted) controller.abort(second.reason)
+  else {
+    first.addEventListener('abort', abort(first), { once: true })
+    second.addEventListener('abort', abort(second), { once: true })
+  }
+  return controller.signal
+}
+
 export interface AbsClientDeps {
   session: SessionStore
   fetcher?: typeof fetch
@@ -34,7 +56,7 @@ export function createAbsClient(deps: AbsClientDeps) {
   const fetcher = deps.fetcher ?? fetch
   const session = deps.session
 
-  async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
+  async function request<T>(path: string, init: RequestInit = {}, retried = false, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const serverUrl = session.getServerUrl()
     const accessToken = session.getAccessToken()
     if (!serverUrl || !accessToken) {
@@ -44,21 +66,35 @@ export function createAbsClient(deps: AbsClientDeps) {
     const headers = new Headers(init.headers)
     headers.set('authorization', `Bearer ${accessToken}`)
 
-    const response = await fetcher(`${serverUrl}${path}`, { ...init, headers })
+    // The timeout signal covers the whole exchange (headers and body). A caller-supplied signal
+    // is honored too, so either can abort the request.
+    const timeoutSignal = AbortSignal.timeout(timeoutMs)
+    const signal = init.signal ? mergeSignals(init.signal, timeoutSignal) : timeoutSignal
 
-    if (response.status === 401 && !retried) {
-      const refreshed = await session.refresh()
-      if (refreshed) {
-        return request<T>(path, init, true)
+    try {
+      const response = await fetcher(`${serverUrl}${path}`, { ...init, headers, signal })
+
+      if (response.status === 401 && !retried) {
+        const refreshed = await session.refresh()
+        if (refreshed) {
+          return request<T>(path, init, true, timeoutMs)
+        }
       }
-    }
 
-    if (!response.ok) {
-      const message = await response.text().catch(() => response.statusText)
-      throw new AbsApiError(response.status, message || response.statusText)
-    }
+      if (!response.ok) {
+        const message = await response.text().catch(() => response.statusText)
+        throw new AbsApiError(response.status, message || response.statusText)
+      }
 
-    return (await response.json()) as T
+      return (await response.json()) as T
+    } catch (error) {
+      // A timeout-driven abort surfaces as a DOMException named TimeoutError -- give callers (and
+      // the player's error line) a readable, typed error instead.
+      if (timeoutSignal.aborted && !init.signal?.aborted) {
+        throw new AbsApiError(408, 'The server took too long to respond')
+      }
+      throw error
+    }
   }
 
   return {
@@ -70,11 +106,16 @@ export function createAbsClient(deps: AbsClientDeps) {
     getLibraryItem: (itemId: string) => request<AbsLibraryItem>(`/api/items/${encodeURIComponent(itemId)}?expanded=1&include=progress`),
 
     startSession: (itemId: string, options: StartSessionOptions) =>
-      request<AbsPlaybackSession>(`/api/items/${encodeURIComponent(itemId)}/play`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(options)
-      }),
+      request<AbsPlaybackSession>(
+        `/api/items/${encodeURIComponent(itemId)}/play`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(options)
+        },
+        false,
+        SESSION_START_TIMEOUT_MS
+      ),
 
     syncSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
       request<void>(`/api/session/${encodeURIComponent(sessionId)}/sync`, {

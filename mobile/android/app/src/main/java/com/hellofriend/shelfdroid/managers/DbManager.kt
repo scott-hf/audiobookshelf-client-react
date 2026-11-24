@@ -5,7 +5,16 @@ import com.hellofriend.shelfdroid.models.DownloadItem
 import com.hellofriend.shelfdroid.models.DownloadItemPart
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONException
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
+import java.util.logging.Level
+import java.util.logging.Logger
 
 private const val DOWNLOADS_FILE = "downloads.json"
 private const val LOCAL_ITEMS_FILE = "local_library_items.json"
@@ -30,54 +39,119 @@ class DbManager(private val baseDir: File) {
     private val downloadsFile get() = File(baseDir, DOWNLOADS_FILE)
     private val localItemsFile get() = File(baseDir, LOCAL_ITEMS_FILE)
 
+    // Every read and every read-modify-write goes through this per-directory lock. It is keyed on
+    // the canonical `baseDir` (not the instance) so two `DbManager`s over the same directory --
+    // the "reopen" pattern, or the plugin layer and the foreground service -- still serialize
+    // against each other inside one process.
+    private val lock: Any = lockFor(baseDir)
+
     // ---- Downloads ----
 
-    fun downloads(): List<DownloadItem> {
-        if (!downloadsFile.exists()) return emptyList()
-        val arr = JSONArray(downloadsFile.readText())
-        return (0 until arr.length()).map { downloadItemFromJson(arr.getJSONObject(it)) }
+    fun downloads(): List<DownloadItem> = synchronized(lock) {
+        readEntries(downloadsFile, strict = false, parse = { downloadItemFromJson(it) })
     }
 
-    fun saveDownload(item: DownloadItem) {
-        val items = downloads().filterNot { it.id == item.id }.toMutableList()
+    fun saveDownload(item: DownloadItem) = synchronized(lock) {
+        val items = readEntries(downloadsFile, strict = true, parse = { downloadItemFromJson(it) }).filterNot { it.id == item.id }.toMutableList()
         items.add(item)
         writeDownloads(items)
     }
 
-    fun removeDownload(id: String) {
-        writeDownloads(downloads().filterNot { it.id == id })
+    fun removeDownload(id: String) = synchronized(lock) {
+        writeDownloads(readEntries(downloadsFile, strict = true, parse = { downloadItemFromJson(it) }).filterNot { it.id == id })
     }
 
     private fun writeDownloads(items: List<DownloadItem>) {
         val arr = JSONArray()
         items.forEach { arr.put(downloadItemToJson(it)) }
-        downloadsFile.writeText(arr.toString())
+        writeAtomically(downloadsFile, arr.toString())
     }
 
     // ---- Local library items ----
 
-    fun localItems(): List<LocalLibraryItem> {
-        if (!localItemsFile.exists()) return emptyList()
-        val arr = JSONArray(localItemsFile.readText())
-        return (0 until arr.length()).map { localItemFromJson(arr.getJSONObject(it)) }
+    fun localItems(): List<LocalLibraryItem> = synchronized(lock) {
+        readEntries(localItemsFile, strict = false, parse = { localItemFromJson(it) })
     }
 
     fun localItem(libraryItemId: String): LocalLibraryItem? = localItems().find { it.libraryItemId == libraryItemId }
 
-    fun saveLocalItem(item: LocalLibraryItem) {
-        val items = localItems().filterNot { it.libraryItemId == item.libraryItemId }.toMutableList()
+    fun saveLocalItem(item: LocalLibraryItem) = synchronized(lock) {
+        val items = readEntries(localItemsFile, strict = true, parse = { localItemFromJson(it) }).filterNot { it.libraryItemId == item.libraryItemId }.toMutableList()
         items.add(item)
         writeLocalItems(items)
     }
 
-    fun removeLocalItem(libraryItemId: String) {
-        writeLocalItems(localItems().filterNot { it.libraryItemId == libraryItemId })
+    fun removeLocalItem(libraryItemId: String) = synchronized(lock) {
+        writeLocalItems(readEntries(localItemsFile, strict = true, parse = { localItemFromJson(it) }).filterNot { it.libraryItemId == libraryItemId })
     }
 
     private fun writeLocalItems(items: List<LocalLibraryItem>) {
         val arr = JSONArray()
         items.forEach { arr.put(localItemToJson(it)) }
-        localItemsFile.writeText(arr.toString())
+        writeAtomically(localItemsFile, arr.toString())
+    }
+
+    /** Reads one index file. A missing/blank file is empty. A file that does not parse as a JSON
+     * array is treated as empty (never thrown out of a startup path): it is first copied to
+     * `<name>.corrupt` so the next write cannot destroy the only copy, and the event is logged.
+     * An individual malformed row is skipped (and logged) instead of discarding its siblings.
+     * With [strict] (read-modify-write callers) a genuine I/O failure is rethrown rather than
+     * read as "empty", because writing back an empty list would wipe the whole catalog. */
+    private fun <T> readEntries(file: File, strict: Boolean, parse: (JSONObject) -> T): List<T> {
+        if (!file.exists()) return emptyList()
+        val text = try {
+            file.readText(Charsets.UTF_8)
+        } catch (e: IOException) {
+            if (strict) throw e
+            LOG.log(Level.WARNING, "Could not read ${file.name}; treating as empty", e)
+            return emptyList()
+        }
+        if (text.isBlank()) return emptyList()
+        val arr = try {
+            JSONArray(text)
+        } catch (e: JSONException) {
+            quarantine(file, e)
+            return emptyList()
+        }
+        val out = ArrayList<T>(arr.length())
+        for (i in 0 until arr.length()) {
+            try {
+                out.add(parse(arr.getJSONObject(i)))
+            } catch (e: JSONException) {
+                LOG.log(Level.WARNING, "Skipping malformed row $i in ${file.name}", e)
+            }
+        }
+        return out
+    }
+
+    private fun quarantine(file: File, cause: Throwable) {
+        LOG.log(Level.SEVERE, "${file.name} is corrupt; treating as empty and keeping a copy as ${file.name}.corrupt", cause)
+        try {
+            file.copyTo(File(file.parentFile, "${file.name}.corrupt"), overwrite = true)
+        } catch (e: IOException) {
+            LOG.log(Level.WARNING, "Could not preserve corrupt ${file.name}", e)
+        }
+    }
+
+    /** Writes [content] to `<name>.tmp`, fsyncs, then renames over [target] so a crash or a
+     * concurrent reader can only ever observe the old file or the complete new one -- never the
+     * truncated-then-partially-written state `File.writeText` leaves behind. */
+    private fun writeAtomically(target: File, content: String) {
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        try {
+            FileOutputStream(tmp).use { out ->
+                out.write(content.toByteArray(Charsets.UTF_8))
+                out.flush()
+                out.fd.sync()
+            }
+            try {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (e: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
     }
 
     /** No-op: file-backed storage has nothing to flush/release beyond the writes already
@@ -86,6 +160,14 @@ class DbManager(private val baseDir: File) {
     fun close() = Unit
 
     companion object {
+        private val LOG: Logger = Logger.getLogger("DbManager")
+        private val LOCKS = ConcurrentHashMap<String, Any>()
+
+        private fun lockFor(dir: File): Any {
+            val key = try { dir.canonicalPath } catch (e: IOException) { dir.absolutePath }
+            return LOCKS.getOrPut(key) { Any() }
+        }
+
         private fun downloadItemToJson(item: DownloadItem): JSONObject {
             val obj = JSONObject()
             obj.put("id", item.id)
@@ -98,6 +180,12 @@ class DbManager(private val baseDir: File) {
             obj.put("state", item.state)
             obj.put("error", item.error)
             obj.put("terminalFailureAt", item.terminalFailureAt)
+            obj.put("author", item.author)
+            obj.put("narrator", item.narrator)
+            obj.put("duration", item.duration)
+            obj.put("coverServerPath", item.coverServerPath)
+            obj.put("coverPath", item.coverPath)
+            obj.put("chaptersJson", item.chaptersJson)
             val parts = JSONArray()
             item.parts.forEach { parts.put(downloadItemPartToJson(it)) }
             obj.put("parts", parts)
@@ -118,9 +206,18 @@ class DbManager(private val baseDir: File) {
                 state = obj.getString("state"),
                 error = if (obj.isNull("error")) null else obj.getString("error"),
                 terminalFailureAt = if (obj.isNull("terminalFailureAt") || !obj.has("terminalFailureAt")) null else obj.getLong("terminalFailureAt"),
+                author = optStringOrNull(obj, "author"),
+                narrator = optStringOrNull(obj, "narrator"),
+                duration = obj.optDouble("duration", 0.0).takeIf { it.isFinite() } ?: 0.0,
+                coverServerPath = optStringOrNull(obj, "coverServerPath"),
+                coverPath = optStringOrNull(obj, "coverPath"),
+                chaptersJson = optStringOrNull(obj, "chaptersJson"),
                 parts = parts
             )
         }
+
+        private fun optStringOrNull(obj: JSONObject, key: String): String? =
+            if (!obj.has(key) || obj.isNull(key)) null else obj.getString(key)
 
         private fun downloadItemPartToJson(part: DownloadItemPart): JSONObject {
             val obj = JSONObject()
@@ -137,6 +234,7 @@ class DbManager(private val baseDir: File) {
             obj.put("contentLength", part.contentLength)
             obj.put("state", part.state)
             obj.put("retryCount", part.retryCount)
+            obj.put("duration", part.duration)
             return obj
         }
 
@@ -153,7 +251,8 @@ class DbManager(private val baseDir: File) {
             failed = obj.getBoolean("failed"),
             contentLength = if (obj.has("contentLength")) obj.getLong("contentLength") else -1,
             state = obj.optString("state", "queued"),
-            retryCount = obj.optInt("retryCount", 0)
+            retryCount = obj.optInt("retryCount", 0),
+            duration = obj.optDouble("duration", 0.0).takeIf { it.isFinite() } ?: 0.0
         )
 
         private fun localItemToJson(item: LocalLibraryItem): JSONObject {

@@ -28,5 +28,7 @@ data class DownloadItemPart(
     var failed: Boolean = false,
     var contentLength: Long = -1,
     var state: String = "queued",
-    var retryCount: Int = 0
+    var retryCount: Int = 0,
+    /** Track duration in seconds as reported by the server session; `0` when unknown. */
+    var duration: Double = 0.0
 )

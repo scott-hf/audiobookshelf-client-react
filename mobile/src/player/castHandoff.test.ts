@@ -5,7 +5,7 @@ import type { PlayerSnapshot } from './playerTypes'
 import { createCastHandoffController, type CastSessionSource } from './castHandoff'
 
 function snapshot(patch: Partial<PlayerSnapshot>): PlayerSnapshot {
-  return { status: 'playing', itemId: 'item-1', currentTime: 0, duration: 3600, error: null, rate: 1, ...patch }
+  return { status: 'playing', itemId: 'item-1', currentTime: 0, duration: 3600, error: null, rate: 1, playWhenReady: true, ...patch }
 }
 
 /** In-memory fake of the native ExoPlayer bridge -- mirrors `nativeAudioPlayer.test.ts`'s

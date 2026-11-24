@@ -1,16 +1,18 @@
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
+import type { TranslationKey } from '../types/translations'
 import Badge from './Badge'
 import Btn from './ui/Btn'
 import type { DownloadSnapshot, DownloadState } from '../downloads/downloadTypes'
 
-const STATE_LABELS: Record<DownloadState, string> = {
-  queued: 'Queued',
-  running: 'Downloading',
-  paused: 'Paused',
-  waiting_for_network: 'Waiting for Wi-Fi',
-  waiting_for_space: 'Waiting for storage',
-  complete: 'Downloaded',
-  failed: 'Failed',
-  cancelled: 'Cancelled'
+const STATE_LABELS: Record<DownloadState, TranslationKey> = {
+  queued: 'LabelMobileDownloadQueued',
+  running: 'LabelMobileDownloadRunning',
+  paused: 'LabelMobileDownloadPaused',
+  waiting_for_network: 'LabelMobileDownloadWaitingForNetwork',
+  waiting_for_space: 'LabelMobileDownloadWaitingForSpace',
+  complete: 'LabelMobileDownloadComplete',
+  failed: 'LabelMobileDownloadFailed',
+  cancelled: 'LabelMobileDownloadCancelled'
 }
 
 const STATE_TONES: Partial<Record<DownloadState, 'success' | 'error' | 'info' | 'warning'>> = {
@@ -23,6 +25,7 @@ const STATE_TONES: Partial<Record<DownloadState, 'success' | 'error' | 'info' | 
 }
 
 const PAUSABLE_STATES: DownloadState[] = ['queued', 'running', 'waiting_for_network', 'waiting_for_space']
+// `failed` is resumable: the native side requeues failed parts (and clears the failure) on resume.
 const RESUMABLE_STATES: DownloadState[] = ['paused', 'failed']
 const CANCELLABLE_STATES: DownloadState[] = ['queued', 'running', 'paused', 'waiting_for_network', 'waiting_for_space', 'failed']
 
@@ -34,6 +37,7 @@ interface DownloadRowProps {
 }
 
 export default function DownloadRow({ download, onPause, onResume, onCancel }: DownloadRowProps) {
+  const t = useTypeSafeTranslations()
   const canPause = PAUSABLE_STATES.includes(download.state)
   const canResume = RESUMABLE_STATES.includes(download.state)
   const canCancel = CANCELLABLE_STATES.includes(download.state)
@@ -43,7 +47,7 @@ export default function DownloadRow({ download, onPause, onResume, onCancel }: D
       <p className="text-foreground text-sm leading-snug font-semibold">{download.title}</p>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge tone={STATE_TONES[download.state] ?? 'neutral'}>{STATE_LABELS[download.state]}</Badge>
+        <Badge tone={STATE_TONES[download.state] ?? 'neutral'}>{t(STATE_LABELS[download.state])}</Badge>
         {download.progressPercent != null && <span className="text-foreground-muted text-xs tabular-nums">{download.progressPercent}%</span>}
       </div>
 
@@ -53,23 +57,23 @@ export default function DownloadRow({ download, onPause, onResume, onCancel }: D
         </div>
       )}
 
-      {download.error && <p className="text-error mt-2 text-xs">Error: {download.error}</p>}
+      {download.error && <p className="text-error mt-2 text-xs">{t('MessageMobileDownloadError', { message: download.error })}</p>}
 
       {(canPause || canResume || canCancel) && (
         <div className="mt-3 flex gap-2">
           {canPause && (
             <Btn size="small" onClick={() => onPause(download.id)} className="justify-center">
-              Pause
+              {t('ButtonPause')}
             </Btn>
           )}
           {canResume && (
             <Btn size="small" onClick={() => onResume(download.id)} className="justify-center">
-              Resume
+              {t('ButtonMobileResumeDownload')}
             </Btn>
           )}
           {canCancel && (
             <Btn size="small" color="bg-error" onClick={() => onCancel(download.id)} className="justify-center">
-              Cancel
+              {t('ButtonCancel')}
             </Btn>
           )}
         </div>

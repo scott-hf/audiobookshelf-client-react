@@ -21,7 +21,7 @@ function fakeNativePlugin() {
     async stop() {},
     async setSleepTimer() {},
     async getState() {
-      return { status: 'idle', itemId: null, currentTime: 0, duration: 0, error: null, rate: 1 } satisfies PlayerSnapshot
+      return { status: 'idle', itemId: null, currentTime: 0, duration: 0, error: null, rate: 1, playWhenReady: false } satisfies PlayerSnapshot
     },
     async addListener(event, listener) {
       if (event === 'playerState') listeners.push(listener)
@@ -49,7 +49,7 @@ describe('createNativeAudioPlayer', () => {
     player.subscribe((state) => states.push(state))
 
     await player.load(sessionFixture)
-    plugin.emit('playerState', { state: 'playing', currentTime: 42, duration: 3600, playbackRate: 1.25 })
+    plugin.emit('playerState', { state: 'playing', currentTime: 42, duration: 3600, playbackRate: 1.25, playWhenReady: true })
 
     expect(states.at(-1)).toMatchObject({ status: 'playing', currentTime: 42, duration: 3600, rate: 1.25 })
     expect(plugin.calls.load).toEqual([sessionFixture])
@@ -61,23 +61,43 @@ describe('createNativeAudioPlayer', () => {
     const states: PlayerSnapshot[] = []
     player.subscribe((state) => states.push(state))
 
-    plugin.emit('playerState', { state: 'buffering', currentTime: -5, duration: 100, playbackRate: 1 })
+    plugin.emit('playerState', { state: 'buffering', currentTime: -5, duration: 100, playbackRate: 1, playWhenReady: false })
     expect(states.at(-1)).toMatchObject({ status: 'buffering', currentTime: 0, duration: 100 })
 
-    plugin.emit('playerState', { state: 'playing', currentTime: 150, duration: 100, playbackRate: 1 })
+    plugin.emit('playerState', { state: 'playing', currentTime: 150, duration: 100, playbackRate: 1, playWhenReady: true })
     expect(states.at(-1)).toMatchObject({ status: 'playing', currentTime: 100, duration: 100 })
 
-    plugin.emit('playerState', { state: 'ended', currentTime: 100, duration: 100, playbackRate: 1 })
+    plugin.emit('playerState', { state: 'ended', currentTime: 100, duration: 100, playbackRate: 1, playWhenReady: false })
     expect(states.at(-1)).toMatchObject({ status: 'ended', error: null })
 
-    plugin.emit('playerState', { state: 'error', currentTime: 10, duration: 100, playbackRate: 1, error: 'device offline' })
+    plugin.emit('playerState', { state: 'error', currentTime: 10, duration: 100, playbackRate: 1, playWhenReady: false, error: 'device offline' })
     expect(states.at(-1)).toMatchObject({ status: 'error', error: 'device offline' })
+  })
+
+  it('maps playWhenReady separately from status (buffering with and without intent to play)', () => {
+    const plugin = fakeNativePlugin()
+    const player = createNativeAudioPlayer(plugin)
+
+    plugin.emit('playerState', { state: 'buffering', currentTime: 5, duration: 100, playbackRate: 1, playWhenReady: true })
+    expect(player.getState()).toMatchObject({ status: 'buffering', playWhenReady: true })
+
+    plugin.emit('playerState', { state: 'buffering', currentTime: 5, duration: 100, playbackRate: 1, playWhenReady: false })
+    expect(player.getState()).toMatchObject({ status: 'buffering', playWhenReady: false })
+  })
+
+  it('propagates a rejected plugin call instead of swallowing it', async () => {
+    const plugin = fakeNativePlugin()
+    plugin.pause = async () => {
+      throw new Error('Native player service not bound yet')
+    }
+    const player = createNativeAudioPlayer(plugin)
+    await expect(player.pause()).rejects.toThrow('Native player service not bound yet')
   })
 
   it('getState reflects the latest snapshot', async () => {
     const plugin = fakeNativePlugin()
     const player = createNativeAudioPlayer(plugin)
-    plugin.emit('playerState', { state: 'paused', currentTime: 5, duration: 60, playbackRate: 1 })
+    plugin.emit('playerState', { state: 'paused', currentTime: 5, duration: 60, playbackRate: 1, playWhenReady: false })
     expect(player.getState()).toMatchObject({ status: 'paused', currentTime: 5, duration: 60 })
   })
 })

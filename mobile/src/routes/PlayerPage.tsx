@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { useTypeSafeTranslations } from '@/hooks/useTypeSafeTranslations'
+import { mergeClasses } from '@/lib/merge-classes'
 import { useAuth } from '../auth/AuthProvider'
 import BookCover from '../components/BookCover'
-import { mergeClasses } from '@/lib/merge-classes'
+import type { PlayerStatus } from '../player/playerTypes'
 import { usePlayer } from '../player/PlayerProvider'
+import type { TranslationKey } from '../types/translations'
 import type { AbsLibraryItem } from '../types/abs'
 
 function formatTime(seconds: number): string {
@@ -24,26 +27,29 @@ const PLAYBACK_RATES = [1, 1.25, 1.5, 2]
 const JUMP_BACK_SECONDS = 10
 const JUMP_FORWARD_SECONDS = 30
 
-const STATUS_LABELS: Record<string, string> = {
-  idle: 'Idle',
-  loading: 'Loading…',
-  buffering: 'Buffering…',
-  playing: 'Playing',
-  paused: 'Paused',
-  ended: 'Finished',
-  error: 'Error'
+const STATUS_LABEL_KEYS: Record<PlayerStatus, TranslationKey> = {
+  idle: 'MessagePlayerStatusIdle',
+  loading: 'MessagePlayerStatusLoading',
+  buffering: 'MessagePlayerStatusBuffering',
+  playing: 'MessagePlayerStatusPlaying',
+  paused: 'MessagePlayerStatusPaused',
+  ended: 'MessagePlayerStatusEnded',
+  error: 'MessagePlayerStatusError'
 }
 
 export default function PlayerPage() {
   const { itemId } = useParams<{ itemId: string }>()
   const { client } = useAuth()
-  const { state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
+  const t = useTypeSafeTranslations()
+  const { state, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
   const [item, setItem] = useState<AbsLibraryItem | null>(null)
   const [sleepTimerOn, setSleepTimerOn] = useState(false)
 
   useEffect(() => {
     if (itemId && state.itemId !== itemId) {
-      void play(itemId)
+      // A failed start is already reflected in `state` (status 'error' + message) with a retry
+      // button, so the rejection itself carries nothing more to show.
+      play(itemId).catch(() => {})
     }
     // Item replacement / unmount -- close reports final progress and stops the sync timer.
     return () => {
@@ -74,8 +80,15 @@ export default function PlayerPage() {
 
   if (!itemId) return null
 
+  // `buffering` is deliberately NOT disabled: the user must still be able to pause (or seek away
+  // from) a stalled buffer.
   const controlsDisabled = state.status === 'loading' || state.status === 'idle'
-  const isPlaying = state.status === 'playing'
+  // The button reflects intent: buffering while playWhenReady will start playing by itself, so it
+  // shows Pause -- a tap pauses instead of calling play() on an already-playing-intent player.
+  const showPause = state.status === 'playing' || (state.status === 'buffering' && state.playWhenReady)
+  const showSpinner = state.status === 'buffering' || state.status === 'loading'
+  const showRetry = state.status === 'error'
+  const statusLabel = stalled && state.status === 'buffering' ? t('MessagePlayerStalled') : t(STATUS_LABEL_KEYS[state.status])
   const duration = state.duration || 0
   const progressPercent = duration > 0 ? (Math.min(state.currentTime, duration) / duration) * 100 : 0
   const title = item?.media.metadata.title
@@ -98,7 +111,7 @@ export default function PlayerPage() {
         {title && <h2 className="text-foreground text-lg leading-tight font-bold">{title}</h2>}
         {authorName && <p className="text-foreground-muted mt-0.5 text-sm">{authorName}</p>}
         <p className="text-foreground-subdued mt-1 text-xs" aria-live="polite">
-          {STATUS_LABELS[state.status] ?? state.status}
+          {statusLabel}
         </p>
       </div>
 
@@ -147,30 +160,28 @@ export default function PlayerPage() {
           </span>
         </button>
 
-        {isPlaying ? (
-          <button
-            type="button"
-            onClick={pause}
-            aria-label="Pause"
-            className="bg-accent text-black-600 flex size-16 items-center justify-center rounded-full shadow-lg transition-transform active:scale-95"
-          >
-            <span className="material-symbols fill text-4xl" aria-hidden="true">
-              pause
-            </span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => void resume()}
-            disabled={controlsDisabled}
-            aria-label="Play"
-            className="bg-accent text-black-600 disabled:bg-bg-disabled disabled:text-disabled flex size-16 items-center justify-center rounded-full shadow-lg transition-transform active:scale-95 disabled:active:scale-100"
-          >
-            <span className="material-symbols fill text-4xl" aria-hidden="true">
-              play_arrow
-            </span>
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (showRetry) play(itemId).catch(() => {})
+            else if (showPause) pause()
+            else void resume()
+          }}
+          disabled={controlsDisabled}
+          aria-label={showRetry ? t('ButtonRetry') : showPause ? t('ButtonPause') : t('ButtonPlay')}
+          className="bg-accent text-black-600 disabled:bg-bg-disabled disabled:text-disabled relative flex size-16 items-center justify-center rounded-full shadow-lg transition-transform active:scale-95 disabled:active:scale-100"
+        >
+          {showSpinner && (
+            <span
+              data-testid="player-spinner"
+              className="border-accent/30 border-t-accent pointer-events-none absolute -inset-1.5 animate-spin rounded-full border-2"
+              aria-hidden="true"
+            />
+          )}
+          <span className="material-symbols fill text-4xl" aria-hidden="true">
+            {showRetry ? 'refresh' : showPause ? 'pause' : 'play_arrow'}
+          </span>
+        </button>
 
         <button
           type="button"

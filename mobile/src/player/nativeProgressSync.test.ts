@@ -4,7 +4,7 @@ import type { PlayerSnapshot } from './playerTypes'
 import { createNativeProgressSync } from './nativeProgressSync'
 
 function snapshot(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
-  return { status: 'playing', itemId: 'b1', currentTime: 0, duration: 3600, error: null, rate: 1, ...overrides }
+  return { status: 'playing', itemId: 'b1', currentTime: 0, duration: 3600, error: null, rate: 1, playWhenReady: true, ...overrides }
 }
 
 function fakeApi(): AbsClient {

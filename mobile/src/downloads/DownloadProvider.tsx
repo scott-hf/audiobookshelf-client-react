@@ -1,10 +1,14 @@
 import { Capacitor } from '@capacitor/core'
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
+import type { AbsClient } from '../api/absClient'
 import { useAuth } from '../auth/AuthProvider'
 import AbsDownloaderNative from '../native/absDownloaderPlugin'
 import AbsFileSystemNative from '../native/absFileSystemPlugin'
-import type { AbsLibraryItem } from '../types/abs'
-import { DownloadSnapshot, LocalLibraryItem, RawDownloadEvent, toDownloadSnapshot } from './downloadTypes'
+import { localOfflineProgressStorage } from '../player/offlineProgress'
+import { SettingsContext } from '../settings/SettingsProvider'
+import { DefaultMobileSettings, localSettingsStorage } from '../settings/settingsTypes'
+import type { AbsLibraryItem, AbsPlaybackSession } from '../types/abs'
+import { DownloadSnapshot, LocalLibraryItem, RawDownloadEvent, toDownloadSnapshot, withoutOrphanedComplete } from './downloadTypes'
 
 export interface DownloadContextValue {
   queue: DownloadSnapshot[]
@@ -21,6 +25,26 @@ export const DownloadContext = createContext<DownloadContextValue | undefined>(u
 
 const DEVICE_ID = 'shelfdroid-android'
 
+/** Direct-file formats only. A download saves exactly the bytes the server sends for each track
+ * URL, so an HLS/transcode playlist (`application/vnd.apple.mpegurl`) must never be accepted --
+ * it would be stored as a `.m3u8` text file instead of audio. */
+const DOWNLOAD_MIME_TYPES = ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'audio/ogg', 'audio/opus']
+
+/** True when the session hands back streaming-playlist URLs rather than direct audio files. */
+function isStreamingSession(session: AbsPlaybackSession): boolean {
+  return session.audioTracks.some((track) => /\/hls\/|\.m3u8(\?|$)/i.test(track.contentUrl))
+}
+
+/** Best-effort: `download()` only opens a play session to learn the track URLs, so it must close
+ * it again (or the server keeps counting it as an open listening session). Never throws. */
+async function closeSessionQuietly(client: AbsClient, session: AbsPlaybackSession): Promise<void> {
+  try {
+    await client.closeSession(session.id, { currentTime: session.currentTime, timeListened: 0 })
+  } catch {
+    // The session expires server-side on its own; nothing useful to do with a failure here.
+  }
+}
+
 /**
  * React-side offline download queue/catalog (WI-1496 t800 Task 4), mirroring
  * `AcquisitionProvider`'s "context owns the live state, pages just read it" shape. Native-only:
@@ -32,9 +56,34 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const isNative = Capacitor.isNativePlatform()
   const [queue, setQueue] = useState<DownloadSnapshot[]>([])
   const [localItems, setLocalItems] = useState<LocalLibraryItem[]>([])
+  const settingsContext = useContext(SettingsContext)
+  const contextWifiOnly = settingsContext?.settings.wifiOnly
+
+  /** The current Wi-Fi-only preference: the live settings context when this provider sits under
+   * one, else the persisted settings (`SettingsProvider` writes every change to
+   * `localSettingsStorage`, so reading it back always yields the latest choice). */
+  const resolveWifiOnly = useCallback(async (): Promise<boolean> => {
+    if (contextWifiOnly !== undefined) return contextWifiOnly
+    const stored = await localSettingsStorage.read()
+    return stored?.wifiOnly ?? DefaultMobileSettings.wifiOnly
+  }, [contextWifiOnly])
+
+  const pushWifiOnly = useCallback(async () => {
+    try {
+      await AbsDownloaderNative.setWifiOnly({ wifiOnly: await resolveWifiOnly() })
+    } catch {
+      // Best effort: the native side keeps its last known (or conservative default) policy. Also
+      // swallows a plugin without the method (older native build, test mocks).
+    }
+  }, [resolveWifiOnly])
 
   const applyEvent = useCallback((raw: RawDownloadEvent) => {
     const snapshot = toDownloadSnapshot(raw)
+    // A cancelled download is gone natively; keeping its row would also block a re-download.
+    if (snapshot.state === 'cancelled') {
+      setQueue((prev) => prev.filter((entry) => entry.id !== snapshot.id))
+      return
+    }
     setQueue((prev) => {
       const index = prev.findIndex((entry) => entry.id === snapshot.id)
       if (index === -1) return [snapshot, ...prev]
@@ -46,15 +95,21 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     if (!isNative) return
     const response = await AbsFileSystemNative.listLocalItems()
     setLocalItems(response.items)
+    setQueue((prev) => withoutOrphanedComplete(prev, response.items))
   }, [isNative])
 
   useEffect(() => {
     if (!isNative) return
     let cancelled = false
-    AbsDownloaderNative.listQueue().then((response) => {
-      if (!cancelled) setQueue(response.items.map(toDownloadSnapshot))
-    })
-    void refreshLocalItems()
+    // Load both together so a `complete` queue row whose files are gone (hidden from the local
+    // list by the native integrity check) is dropped instead of blocking a re-download.
+    void Promise.all([AbsDownloaderNative.listQueue(), AbsFileSystemNative.listLocalItems()])
+      .then(([queueResponse, localResponse]) => {
+        if (cancelled) return
+        setLocalItems(localResponse.items)
+        setQueue(withoutOrphanedComplete(queueResponse.items.map(toDownloadSnapshot), localResponse.items))
+      })
+      .catch(() => undefined)
 
     const progressHandle = AbsDownloaderNative.addListener('downloadProgress', applyEvent)
     const completeHandle = AbsDownloaderNative.addListener('downloadComplete', (raw) => {
@@ -71,40 +126,56 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     }
   }, [isNative, applyEvent, refreshLocalItems])
 
+  // Tell the native transfer policy the Wi-Fi-only preference on mount and whenever it changes.
+  useEffect(() => {
+    if (isNative) void pushWifiOnly()
+  }, [isNative, pushWifiOnly])
+
   const isLocal = useCallback((libraryItemId: string) => localItems.some((item) => item.libraryItemId === libraryItemId), [localItems])
 
-  /** Skips re-queueing a book already queued unless its last attempt failed, per the plan's
-   * Step 3 dedupe rule. */
+  /** Skips re-queueing a book that is already queued or downloaded, per the plan's Step 3
+   * dedupe rule. A failed or cancelled attempt -- or a `complete` row whose files are gone from
+   * the offline library -- may be started again. */
   const download = useCallback(
     async (item: AbsLibraryItem) => {
       if (!isNative) return
       const existing = queue.find((entry) => entry.libraryItemId === item.id)
-      if (existing && existing.state !== 'failed') return
+      if (existing) {
+        const retryable =
+          existing.state === 'failed' || existing.state === 'cancelled' || (existing.state === 'complete' && !localItems.some((local) => local.libraryItemId === item.id))
+        if (!retryable) return
+      }
 
       const session = await client.startSession(item.id, {
         deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
-        supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
+        supportedMimeTypes: DOWNLOAD_MIME_TYPES,
         mediaPlayer: 'exo',
         forceTranscode: false,
-        forceDirectPlay: false
+        forceDirectPlay: true
       })
-      const accessToken = client.getAccessToken()
-      const serverUrl = client.getServerUrl()
-      if (!accessToken || !serverUrl) throw new Error('Not authenticated')
+      try {
+        if (isStreamingSession(session)) throw new Error('This book can only be streamed, not downloaded')
+        const accessToken = client.getAccessToken()
+        const serverUrl = client.getServerUrl()
+        if (!accessToken || !serverUrl) throw new Error('Not authenticated')
 
-      await AbsDownloaderNative.enqueue({
-        libraryItemId: item.id,
-        title: item.media.metadata.title,
-        session,
-        accessToken,
-        serverUrl,
-        // This milestone has no multi-account concept -- the server URL itself is a stable
-        // per-connection identity, matching how the native side scopes internal storage
-        // (`downloads/{serverConnectionId}/{libraryItemId}`, see `FolderScanner.finalInternalPath`).
-        serverConnectionId: serverUrl
-      })
+        await pushWifiOnly()
+        await AbsDownloaderNative.enqueue({
+          libraryItemId: item.id,
+          title: item.media.metadata.title,
+          session,
+          accessToken,
+          serverUrl,
+          // This milestone has no multi-account concept -- the server URL itself is a stable
+          // per-connection identity, matching how the native side scopes internal storage
+          // (`downloads/{serverConnectionId}/{libraryItemId}`, see `FolderScanner.finalInternalPath`).
+          serverConnectionId: serverUrl
+        })
+      } finally {
+        await closeSessionQuietly(client, session)
+      }
     },
-    [isNative, queue, client]
+    [isNative, queue, localItems, client, pushWifiOnly]
   )
 
   const pause = useCallback(
@@ -129,6 +200,13 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     async (libraryItemId: string) => {
       if (!isNative) return
       await AbsDownloaderNative.remove({ libraryItemId })
+      // The native side drops its queue row too; mirror that so a stale `complete` entry cannot
+      // block downloading the book again.
+      setQueue((prev) => prev.filter((entry) => entry.libraryItemId !== libraryItemId && entry.id !== libraryItemId))
+      // Drop the locally-cached resume position with the files. Leaving it behind would resume a
+      // re-downloaded book at a position the user never reached in that copy; the ABS server
+      // remains the durable record of progress, and this store is only an offline cache of it.
+      localOfflineProgressStorage.clear(libraryItemId)
       await refreshLocalItems()
     },
     [isNative, refreshLocalItems]

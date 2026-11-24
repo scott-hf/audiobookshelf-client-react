@@ -79,3 +79,10 @@ export interface LocalLibraryItem {
   /** Epoch millis the download finished. */
   completedAt: number
 }
+
+/** A `complete` queue row with no matching offline-library entry no longer has files behind it
+ * (deleted, or hidden by the native missing/truncated-file check); keeping it would make the
+ * book look queued and block downloading it again. Rows in any other state are untouched. */
+export function withoutOrphanedComplete(queue: DownloadSnapshot[], localItems: LocalLibraryItem[]): DownloadSnapshot[] {
+  return queue.filter((entry) => entry.state !== 'complete' || localItems.some((local) => local.libraryItemId === entry.libraryItemId))
+}

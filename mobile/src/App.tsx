@@ -60,8 +60,11 @@ function DeepLinkListener() {
 function AuthenticatedApp() {
   return (
     <AcquisitionProvider>
-      <DownloadProvider>
-        <SettingsProvider>
+      {/* SettingsProvider sits ABOVE DownloadProvider: DownloadProvider reads SettingsContext to push
+          the Wi-Fi-only preference to the native downloader, so under the old order a toggle
+          while downloads were parked only reached native on the next enqueue or app restart. */}
+      <SettingsProvider>
+        <DownloadProvider>
           <PlayerProvider>
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3 pb-6">
@@ -88,8 +91,8 @@ function AuthenticatedApp() {
               <AppTabBar />
             </div>
           </PlayerProvider>
-        </SettingsProvider>
-      </DownloadProvider>
+        </DownloadProvider>
+      </SettingsProvider>
     </AcquisitionProvider>
   )
 }

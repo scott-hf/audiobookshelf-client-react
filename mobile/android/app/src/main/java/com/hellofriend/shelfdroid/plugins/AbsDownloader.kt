@@ -6,7 +6,6 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.hellofriend.shelfdroid.device.FolderScanner
-import com.hellofriend.shelfdroid.managers.DbManager
 import com.hellofriend.shelfdroid.managers.DownloadEventListener
 import com.hellofriend.shelfdroid.managers.DownloadItemManager
 import com.hellofriend.shelfdroid.models.DownloadItem
@@ -35,7 +34,6 @@ import java.io.File
 @CapacitorPlugin(name = "AbsDownloader")
 class AbsDownloader : Plugin() {
     private val downloadItemManager: DownloadItemManager get() = DownloadServiceHost.ensure(context)
-    private val dbManager: DbManager get() = DbManager(File(context.filesDir, "shelfdroid_db"))
 
     private val clientEventListener = object : DownloadEventListener {
         override fun onItemUpdated(item: DownloadItem) {
@@ -107,6 +105,11 @@ class AbsDownloader : Plugin() {
             parts = parts
         )
 
+        // Optional: the JS settings screen's Wi-Fi-only preference rides along so a download
+        // enqueued right after toggling it is gated by the new value.
+        call.getBoolean("wifiOnly")?.let { DownloadServiceHost.setWifiOnly(context, it) }
+        // Always refresh the token, including for an id that is already queued (a retry after an
+        // authentication failure or a process restart): `manager.enqueue` revives such an item.
         DownloadServiceHost.setToken(libraryItemId, accessToken)
         val manager = downloadItemManager
         manager.enqueue(downloadItem)
@@ -126,6 +129,18 @@ class AbsDownloader : Plugin() {
     fun resume(call: PluginCall) {
         val id = call.getString("id") ?: return call.reject("Missing 'id'")
         downloadItemManager.resume(id)
+        DownloadServiceHost.startService(context)
+        call.resolve()
+    }
+
+    /** Pushes the JS `wifiOnly` preference to the native transfer policy (see
+     * `DownloadServiceHost.setWifiOnly`). Not part of `AbsDownloaderPlugin`'s TS interface yet --
+     * `DownloadProvider` calls it through a local extension type. */
+    @PluginMethod
+    fun setWifiOnly(call: PluginCall) {
+        val wifiOnly = call.getBoolean("wifiOnly") ?: return call.reject("Missing 'wifiOnly'")
+        downloadItemManager
+        DownloadServiceHost.setWifiOnly(context, wifiOnly)
         call.resolve()
     }
 
@@ -139,11 +154,9 @@ class AbsDownloader : Plugin() {
     @PluginMethod
     fun remove(call: PluginCall) {
         val libraryItemId = call.getString("libraryItemId") ?: return call.reject("Missing 'libraryItemId'")
-        val local = dbManager.localItem(libraryItemId)
-        if (local != null) {
-            File(local.folderUri).deleteRecursively()
-            dbManager.removeLocalItem(libraryItemId)
-        }
+        // Drops the queue rows (memory and downloads.json) as well as the files and the local
+        // library row, so the book cannot be resurrected on the next restart.
+        DownloadServiceHost.removeLocal(context, libraryItemId)
         call.resolve()
     }
 

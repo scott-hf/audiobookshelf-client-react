@@ -1,6 +1,7 @@
 import { App as CapacitorApp } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useTypeSafeTranslations } from '@/hooks/useTypeSafeTranslations'
 import { useAuth } from '../auth/AuthProvider'
 import { useDownloads } from '../downloads/DownloadProvider'
 import AbsAudioPlayerNative from '../native/absAudioPlayerPlugin'
@@ -9,15 +10,36 @@ import { createCastHandoffController, CastHandoffController, CastSessionSource }
 import { HtmlAudioPlayer } from './htmlAudioPlayer'
 import { createNativeAudioPlayer } from './nativeAudioPlayer'
 import { createNativeProgressSync, NativeProgressSync } from './nativeProgressSync'
+import { createOfflineProgressSync, localOfflineProgressStorage, replayUnsyncedOfflineProgress, resolveOfflineStartTime } from './offlineProgress'
 import { LocalTrack, parseLocalManifest, selectPlaybackSource } from './offlineSource'
 import { INITIAL_PLAYER_STATE, PlayerSnapshot, PlayerState } from './playerTypes'
 
 const DEVICE_ID = 'shelfdroid-android'
 const DEFAULT_JUMP_FORWARD_SECONDS = 30
 const DEFAULT_JUMP_BACKWARD_SECONDS = 10
+/** A `loading` state (session start + native load) that outlasts this becomes an `error`, so a hung
+ * request cannot leave every control disabled forever. Longer than the session-start request
+ * timeout (absClient's SESSION_START_TIMEOUT_MS) so a plain slow server surfaces its own error first. */
+export const LOADING_TIMEOUT_MS = 30_000
+/** Buffering with intent to play for longer than this is reported as `stalled` so the UI can say so
+ * instead of showing a bare "Buffering…" indefinitely. */
+export const STALL_THRESHOLD_MS = 15_000
+/** How long an explicit close() waits for the ABS session-close request before moving on. */
+const CLOSE_SESSION_WAIT_MS = 3_000
+
+/** Capacitor rejections are not always `Error` instances (the native bridge can reject with a
+ * plain `{ message }` object), so pull a message out of whatever was thrown. */
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error) return error
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string' && error.message) return error.message
+  return fallback
+}
 
 export interface PlayerContextValue {
   state: PlayerState
+  /** True once the player has been buffering with intent to play for STALL_THRESHOLD_MS. */
+  stalled: boolean
   /** Live playback rate; only the native player actually varies it (HtmlAudioPlayer's
    * <audio>.playbackRate is not wired up in the milestone-one web path). Exposed regardless
    * of platform so PlayerPage doesn't need to branch on `Capacitor.isNativePlatform()` itself. */
@@ -50,6 +72,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // needing to duplicate that decision.
   const { localItems } = useDownloads()
   const isNative = useMemo(() => Capacitor.isNativePlatform(), [])
+  const t = useTypeSafeTranslations()
 
   const htmlPlayer = useMemo(() => (isNative ? null : new HtmlAudioPlayer({ api: client })), [client, isNative])
   const nativePlayer = useMemo(() => (isNative ? createNativeAudioPlayer(AbsAudioPlayerNative) : null), [isNative])
@@ -63,6 +86,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const [state, setState] = useState<PlayerState>(INITIAL_PLAYER_STATE)
   const [rate, setRateState] = useState(1)
+  const [stalled, setStalled] = useState(false)
+  // Error from a transport command (play/pause/seek/...) that was rejected by the native bridge.
+  // Kept apart from `state.error` because every native snapshot (now ticking twice a second)
+  // replaces `state` wholesale and would wipe it immediately.
+  const [actionError, setActionError] = useState<string | null>(null)
+  // Latest committed state for event handlers: jump/seek must work from the current position, not
+  // from whatever `state` the memoized context value happened to close over.
+  const stateRef = useRef<PlayerState>(state)
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   const progressSyncRef = useRef<NativeProgressSync | null>(null)
   const itemIdRef = useRef<string | null>(null)
@@ -94,17 +128,50 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nativePlayer) return
     return nativePlayer.subscribe((snapshot: PlayerSnapshot) => {
-      setState({
+      setState((previous) => ({
         status: snapshot.status,
         itemId: itemIdRef.current,
-        currentTime: snapshot.currentTime,
+        // Keep the seeded offline resume position visible through the pre-roll. `load()` emits a
+        // `loading`/`buffering` snapshot with `currentTime: 0` before ExoPlayer has seeked to the
+        // session's start position, which would otherwise flash the restored position back to
+        // 0:00 right after play() seeded it (see the offline start-time resolution below).
+        // Transient by construction: the first snapshot carrying a real position wins, because a
+        // seeked player reports its actual position rather than 0.
+        currentTime: snapshot.currentTime === 0 && previous.currentTime > 0 && (snapshot.status === 'loading' || snapshot.status === 'buffering') ? previous.currentTime : snapshot.currentTime,
         duration: snapshot.duration,
-        error: snapshot.error
-      })
+        error: snapshot.error,
+        playWhenReady: snapshot.playWhenReady
+      }))
       setRateState(snapshot.rate)
       progressSyncRef.current?.observe(snapshot)
     })
   }, [nativePlayer])
+
+  // Stall watchdog: buffering *with intent to play* that outlasts STALL_THRESHOLD_MS is surfaced
+  // so the UI can say so. Keyed on the status/intent transition, not on each snapshot, so the
+  // native position ticks do not restart the clock.
+  const buffering = state.status === 'buffering' && state.playWhenReady
+  useEffect(() => {
+    if (!buffering) return
+    const timer = setTimeout(() => setStalled(true), STALL_THRESHOLD_MS)
+    return () => {
+      clearTimeout(timer)
+      setStalled(false)
+    }
+  }, [buffering])
+
+  // Loading watchdog (native path): a hung session request / native load becomes an error after
+  // LOADING_TIMEOUT_MS instead of leaving every control disabled. Bumping the generation makes the
+  // hung play() hand back whatever it eventually acquires rather than installing it.
+  const loading = state.status === 'loading'
+  useEffect(() => {
+    if (!nativePlayer || !loading) return
+    const timer = setTimeout(() => {
+      playGenerationRef.current++
+      setState((previous) => ({ ...INITIAL_PLAYER_STATE, status: 'error', itemId: previous.itemId, error: t('MessagePlayerLoadTimeout') }))
+    }, LOADING_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [nativePlayer, loading, t])
 
   useEffect(() => {
     // Close (not just pause) on app background per the vertical-slice spec -- the sync
@@ -150,17 +217,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // Supersede any in-flight play() so it releases its own session instead of installing it
     // after we have already cleaned up.
     playGenerationRef.current++
-    await teardownNative()
+    await teardownNative({ waitForClose: true })
   }
 
   /** Releases the native player and the current ABS session. Does not touch `playGenerationRef`
-   * -- callers decide whether they are superseding an in-flight play(). */
-  async function teardownNative(): Promise<void> {
+   * -- callers decide whether they are superseding an in-flight play().
+   *
+   * Never rejects and never waits unboundedly on the server: a failed `stop()` is moot because the
+   * next `load()` (or the user's close) surfaces any real problem, and the ABS session close is
+   * fire-and-forget (`waitForClose: false`, used when replacing an item so a slow/dead server
+   * cannot block the new load) or time-boxed (`waitForClose: true`, used by an explicit close()). */
+  async function teardownNative({ waitForClose }: { waitForClose: boolean }): Promise<void> {
     if (!nativePlayer) return
-    await nativePlayer.stop()
-    if (progressSyncRef.current) {
-      await progressSyncRef.current.close()
-      progressSyncRef.current = null
+    const sync = progressSyncRef.current
+    progressSyncRef.current = null
+    try {
+      await nativePlayer.stop()
+    } catch {
+      // Service not bound / already stopped -- nothing to release.
+    }
+    if (sync) {
+      const closing = sync.close().catch(() => {
+        // Best-effort: the server may already have closed it, or be unreachable.
+      })
+      if (waitForClose) await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, CLOSE_SESSION_WAIT_MS))])
     }
     itemIdRef.current = null
     castSourceRef.current = null
@@ -173,8 +253,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
    * stream path, a failure to reach the server (offline/airplane-mode, the whole point of offline
    * playback) is not fatal: playback proceeds unsynced, using the item id itself as a stable
    * session identifier for the player's own state, and progress simply doesn't sync until the
-   * next time this item is opened with the server reachable. */
-  async function startOfflineSession(itemId: string): Promise<{ sessionId: string; sync: NativeProgressSync | null }> {
+   * next time this item is opened with the server reachable.
+   *
+   * `serverCurrentTime` is the position the server session reports, or null when it fell back to
+   * unsynced (no server to ask). The caller combines it with the local offline record
+   * (`resolveOfflineStartTime`) -- it is NOT the start position on its own, because after offline
+   * listening the server is stale. When a session was obtained, any progress recorded offline is
+   * pushed up first (`replayUnsyncedOfflineProgress`; best-effort, never throws). */
+  async function startOfflineSession(itemId: string): Promise<{ sessionId: string; sync: NativeProgressSync | null; serverCurrentTime: number | null }> {
     try {
       const session = await client.startSession(itemId, {
         deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
@@ -183,19 +269,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         forceTranscode: false,
         forceDirectPlay: false
       })
+      await replayUnsyncedOfflineProgress(client, session.id, itemId, session.currentTime)
       // Returned rather than assigned to progressSyncRef so the caller can drop it (closing the
       // session) if this play() attempt was superseded while the request was in flight.
-      return { sessionId: session.id, sync: createNativeProgressSync(client, session.id) }
+      return { sessionId: session.id, sync: createNativeProgressSync(client, session.id), serverCurrentTime: session.currentTime }
     } catch {
       // No network / server unreachable -- expected for offline playback. Play unsynced.
-      return { sessionId: itemId, sync: null }
+      return { sessionId: itemId, sync: null, serverCurrentTime: null }
     }
   }
 
-  async function loadOfflineTracks(sessionId: string, tracks: LocalTrack[]): Promise<void> {
+  async function loadOfflineTracks(sessionId: string, tracks: LocalTrack[], currentTime: number): Promise<void> {
     if (!nativePlayer) return
     await nativePlayer.load({
-      session: { id: sessionId, currentTime: 0, audioTracks: tracks.map((track) => ({ index: track.index, contentUrl: track.contentUrl, duration: track.duration })) },
+      session: { id: sessionId, currentTime, audioTracks: tracks.map((track) => ({ index: track.index, contentUrl: track.contentUrl, duration: track.duration })) },
       accessToken: client.getAccessToken() ?? '',
       serverUrl: client.getServerUrl() ?? ''
     })
@@ -205,11 +292,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (nativePlayer) {
       // Claim this generation first so any already-running play() sees itself superseded.
       const generation = ++playGenerationRef.current
-      await teardownNative()
-      if (generation !== playGenerationRef.current) return
-
-      itemIdRef.current = itemId
-      setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
+      setActionError(null)
 
       const local = localItems.find((entry) => entry.libraryItemId === itemId)
       const source = selectPlaybackSource({ id: itemId }, parseLocalManifest(local))
@@ -233,6 +316,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
 
       try {
+        // Inside the try so a failure here lands in the error state (with a retry path) rather
+        // than escaping with the UI stuck on whatever state preceded it.
+        await teardownNative({ waitForClose: false })
+        if (generation !== playGenerationRef.current) return
+
+        // Read AFTER teardownNative: closing the previous playback flushes its local record, and
+        // re-opening the same item must see that flush. Only offline playback keeps a local record
+        // (a downloaded item always resolves to `source.kind === 'offline'`), so the stream path
+        // has nothing to seed.
+        const localProgress = source.kind === 'offline' ? localOfflineProgressStorage.read(itemId) : null
+
+        itemIdRef.current = itemId
+        // Seeded from the local record so the UI shows the resume position while loading instead
+        // of flashing 0:00 (the native snapshots take over once the player is ready).
+        setState({ ...INITIAL_PLAYER_STATE, status: 'loading', itemId, currentTime: localProgress?.currentTime ?? 0 })
+
         if (source.kind === 'offline') {
           // WI-1496 t900 Task 3: offline tracks are local file/content URIs -- not reachable by
           // a Cast receiver (a separate device on the network), so Cast handoff is unavailable
@@ -240,13 +339,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           // to `cast.load()` with a URI the receiver could never fetch.
           castSourceRef.current = null
 
-          const { sessionId, sync } = await startOfflineSession(itemId)
+          const { sessionId, sync, serverCurrentTime } = await startOfflineSession(itemId)
           if (generation !== playGenerationRef.current) return await abandon(sync)
 
-          await loadOfflineTracks(sessionId, source.tracks)
+          // max(server, local), not "prefer the server": after offline listening the server is
+          // stale and preferring it would rewind the user, then overwrite their real progress.
+          await loadOfflineTracks(sessionId, source.tracks, resolveOfflineStartTime(serverCurrentTime, localProgress))
           if (generation !== playGenerationRef.current) return await abandon(sync)
 
-          progressSyncRef.current = sync
+          // Always populated for offline playback (even with no server session) so a local record
+          // is kept whether or not the server is reachable -- that is what makes the NEXT offline
+          // resume work. `sync` is the server sync it wraps, or null when unsynced.
+          progressSyncRef.current = createOfflineProgressSync(itemId, sync)
           await nativePlayer.play()
           return
         }
@@ -285,7 +389,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         // A superseded attempt must not clobber the newer attempt's state or surface its failure.
         if (generation !== playGenerationRef.current) return
-        setState({ status: 'error', itemId, currentTime: 0, duration: 0, error: error instanceof Error ? error.message : 'Playback failed' })
+        setState({ ...INITIAL_PLAYER_STATE, status: 'error', itemId, error: errorMessage(error, 'Playback failed') })
         throw error
       }
       return
@@ -293,9 +397,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     await htmlPlayer?.play(itemId)
   }
 
+  /** Optimistic local `playWhenReady`: flips the intent immediately on tap so the button reflects
+   * it without waiting on the native round trip; the next native snapshot reconciles it. */
+  function setPlayWhenReady(playWhenReady: boolean): void {
+    stateRef.current = { ...stateRef.current, playWhenReady }
+    setState((previous) => (previous.status === 'idle' ? previous : { ...previous, playWhenReady }))
+  }
+
+  /** Runs a native transport command, surfacing a rejection (e.g. "Native player service not bound
+   * yet") through `actionError` instead of discarding it; `revert` undoes any optimistic update. */
+  async function runNativeCommand(command: Promise<void>, fallback: string, revert?: () => void): Promise<void> {
+    setActionError(null)
+    try {
+      await command
+    } catch (error) {
+      revert?.()
+      setActionError(errorMessage(error, fallback))
+    }
+  }
+
   function pause(): void {
     if (nativePlayer) {
-      void nativePlayer.pause()
+      const previous = stateRef.current.playWhenReady
+      setPlayWhenReady(false)
+      void runNativeCommand(nativePlayer.pause(), 'Could not pause playback', () => setPlayWhenReady(previous))
       return
     }
     htmlPlayer?.pause()
@@ -303,21 +428,32 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   async function resume(): Promise<void> {
     if (nativePlayer) {
-      await nativePlayer.play()
+      const previous = stateRef.current.playWhenReady
+      setPlayWhenReady(true)
+      await runNativeCommand(nativePlayer.play(), 'Could not start playback', () => setPlayWhenReady(previous))
       return
     }
-    await htmlPlayer?.resume()
+    try {
+      await htmlPlayer?.resume()
+    } catch (error) {
+      setActionError(errorMessage(error, 'Could not start playback'))
+    }
   }
 
   function seek(time: number): void {
     if (nativePlayer) {
-      void nativePlayer.seek(time)
+      // Optimistic position too: back-to-back jumps must build on each other, not on the last
+      // native snapshot.
+      stateRef.current = { ...stateRef.current, currentTime: time }
+      setState((previous) => ({ ...previous, currentTime: time }))
+      void runNativeCommand(nativePlayer.seek(time), 'Could not seek')
       return
     }
     htmlPlayer?.seek(time)
   }
 
   async function close(): Promise<void> {
+    setActionError(null)
     if (nativePlayer) {
       await closeNative()
       return
@@ -327,18 +463,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   function setRate(nextRate: number): void {
     if (nativePlayer) {
-      void nativePlayer.setRate(nextRate)
+      void runNativeCommand(nativePlayer.setRate(nextRate), 'Could not change playback speed')
       setRateState(nextRate)
     }
     // HtmlAudioPlayer doesn't implement rate control yet -- no-op on web.
   }
 
   function jumpForward(seconds = DEFAULT_JUMP_FORWARD_SECONDS): void {
-    seek(state.currentTime + seconds)
+    const { currentTime, duration } = stateRef.current
+    const target = currentTime + seconds
+    seek(duration > 0 ? Math.min(target, duration) : target)
   }
 
   function jumpBackward(seconds = DEFAULT_JUMP_BACKWARD_SECONDS): void {
-    seek(Math.max(0, state.currentTime - seconds))
+    seek(Math.max(0, stateRef.current.currentTime - seconds))
   }
 
   async function connectCast(): Promise<void> {
@@ -351,15 +489,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   function setSleepTimer(seconds: number | null): void {
     if (nativePlayer) {
-      void nativePlayer.setSleepTimer(seconds)
+      void runNativeCommand(nativePlayer.setSleepTimer(seconds), 'Could not set the sleep timer')
     }
     // No sleep timer support on the web/dev-preview path.
   }
 
+  const visibleState = useMemo<PlayerState>(() => (actionError && !state.error ? { ...state, error: actionError } : state), [state, actionError])
+
   const value = useMemo<PlayerContextValue>(
-    () => ({ state, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer, connectCast, isCasting }),
+    () => ({ state: visibleState, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer, connectCast, isCasting }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state, rate, htmlPlayer, nativePlayer, castHandoff, client]
+    [visibleState, stalled, rate, htmlPlayer, nativePlayer, castHandoff, client]
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

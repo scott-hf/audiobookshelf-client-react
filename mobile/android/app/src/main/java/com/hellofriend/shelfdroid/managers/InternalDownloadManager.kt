@@ -23,7 +23,10 @@ class InternalDownloadManager(private val client: OkHttpClient) {
      * on-disk length after the attempt, regardless of success/failure, so a caller can persist
      * an accurate resume offset either way. */
     sealed class Outcome {
-        data class Success(val bytesDownloaded: Long, val contentLength: Long) : Outcome()
+        /** [sizeVerified] is false only when neither the caller nor the response supplied an
+         * expected size (a chunked response with no `Content-Length`): the byte count could not
+         * be checked against anything, so [contentLength] is just what arrived. */
+        data class Success(val bytesDownloaded: Long, val contentLength: Long, val sizeVerified: Boolean = true) : Outcome()
         data class Unauthorized(val bytesDownloaded: Long) : Outcome()
         data class Failure(val message: String, val bytesDownloaded: Long) : Outcome()
     }
@@ -48,10 +51,17 @@ class InternalDownloadManager(private val client: OkHttpClient) {
         expectedSize: Long,
         hasAvailableSpace: () -> Boolean,
         onCallCreated: (Call) -> Unit = {},
+        onTotalKnown: (totalBytes: Long) -> Unit = {},
         onProgress: (bytesDownloaded: Long) -> Unit
     ): Outcome {
         stagingFile.parentFile?.mkdirs()
-        val existingBytes = stagingFile.takeIf { it.exists() }?.length() ?: 0L
+        var existingBytes = stagingFile.takeIf { it.exists() }?.length() ?: 0L
+        // A staging file longer than the expected size can never be resumed with a Range request
+        // (the server answers 416) -- start over instead of failing forever on every retry.
+        if (expectedSize > 0L && existingBytes > expectedSize) {
+            stagingFile.delete()
+            existingBytes = 0L
+        }
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -85,6 +95,8 @@ class InternalDownloadManager(private val client: OkHttpClient) {
                     else -> -1L
                 }
 
+                if (totalLength > 0L) onTotalKnown(totalLength)
+
                 var total = startBytes
                 var spaceExhausted = false
                 FileOutputStream(stagingFile, append).use { out ->
@@ -110,7 +122,7 @@ class InternalDownloadManager(private val client: OkHttpClient) {
                 if (finalExpected != null && total != finalExpected) {
                     Outcome.Failure("Byte count mismatch: expected $finalExpected got $total", total)
                 } else {
-                    Outcome.Success(total, finalExpected ?: total)
+                    Outcome.Success(total, finalExpected ?: total, sizeVerified = finalExpected != null)
                 }
             }
         } catch (e: IOException) {

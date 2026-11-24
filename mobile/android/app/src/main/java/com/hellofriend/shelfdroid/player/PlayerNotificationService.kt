@@ -23,7 +23,9 @@ import com.hellofriend.shelfdroid.managers.SleepTimerManager
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
+import com.google.android.exoplayer2.DefaultLoadControl
 import com.google.android.exoplayer2.PlaybackParameters
+import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.source.ConcatenatingMediaSource
 import com.google.android.exoplayer2.source.MediaSource
@@ -31,6 +33,7 @@ import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
+import com.google.android.exoplayer2.upstream.DefaultLoadErrorHandlingPolicy
 import com.hellofriend.shelfdroid.data.PlaybackSession
 
 /**
@@ -97,12 +100,33 @@ class PlayerNotificationService : Service() {
     private var accessToken: String = ""
     private var serverUrl: String = ""
 
+    // Read by the Capacitor plugin thread via getState(); written on the main thread.
+    @Volatile
     private var lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, 1f)
 
     /** WI-1496 t700 Task 4: survives process death / service recreation. Real store is plain
      * SharedPreferences (see PlaybackStateStore's doc note on why unencrypted is fine here);
      * mutable + open for test injection, mirroring SecureSessionPlugin's `storeOverride`. */
     lateinit var stateStore: PlaybackStateStore
+
+    private lateinit var playerListener: PlayerListener
+
+    /** Position ticker: ExoPlayer only reports state changes, so while playing/buffering this
+     * re-emits the snapshot every [POSITION_TICK_MS]. Runs on the main looper (the ExoPlayer's
+     * application looper); started/stopped from [syncTicker] and torn down in [stop]/[onDestroy]. */
+    private val tickHandler = Handler(Looper.getMainLooper())
+    private var tickScheduled = false
+    private var lastTickPersistAt = 0L
+    private val tickRunnable = object : Runnable {
+        override fun run() {
+            tickScheduled = false
+            if (!::player.isInitialized || !::playerListener.isInitialized) return
+            if (shouldTick()) {
+                playerListener.emitSnapshot(player, isTick = true)
+                scheduleTick()
+            }
+        }
+    }
 
     private val sleepTimerManager = SleepTimerManager()
     private val sleepCheckHandler = Handler(Looper.getMainLooper())
@@ -209,9 +233,15 @@ class PlayerNotificationService : Service() {
     }
 
     private fun initializePlayer() {
-        player = ExoPlayer.Builder(this).build()
+        // Explicit buffer windows (see PlayerConstants) instead of the defaults, so a stalled
+        // connection re-buffers quickly once data flows again.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, BUFFER_FOR_PLAYBACK_MS, BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
+            .build()
+        player = ExoPlayer.Builder(this).setLoadControl(loadControl).build()
         player.setHandleAudioBecomingNoisy(true)
-        player.addListener(PlayerListener(this))
+        playerListener = PlayerListener(this)
+        player.addListener(playerListener)
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
@@ -249,18 +279,25 @@ class PlayerNotificationService : Service() {
         // behavior) is unaffected: it's still exactly this same auth'd HTTP factory underneath.
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(NOTIFICATION_CHANNEL_ID)
+            .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
             .setDefaultRequestProperties(mapOf("Authorization" to "Bearer $accessToken"))
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
+        // Bounded retry (with ExoPlayer's built-in backoff) before surfacing PlaybackException, so
+        // a dead connection ends in the error state the UI can offer a retry from.
+        val loadErrorPolicy = DefaultLoadErrorHandlingPolicy(LOAD_RETRY_COUNT)
 
         val sortedTracks = session.audioTracks.sortedBy { it.index }
         val mediaSource: MediaSource = if (sortedTracks.size == 1) {
             ProgressiveMediaSource.Factory(dataSourceFactory)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
                 .createMediaSource(MediaItem.fromUri(resolveTrackUrl(sortedTracks[0].contentUrl)))
         } else {
             val concatenating = ConcatenatingMediaSource()
             sortedTracks.forEach { track ->
                 concatenating.addMediaSource(
                     ProgressiveMediaSource.Factory(dataSourceFactory)
+                        .setLoadErrorHandlingPolicy(loadErrorPolicy)
                         .createMediaSource(MediaItem.fromUri(resolveTrackUrl(track.contentUrl)))
                 )
             }
@@ -279,7 +316,16 @@ class PlayerNotificationService : Service() {
     private fun resolveTrackUrl(contentUrl: String): String =
         if (LOCAL_URI_SCHEMES.any { contentUrl.startsWith(it) }) contentUrl else "$serverUrl$contentUrl"
 
+    /** Sets intent to play, first recovering a player that cannot make progress on its own:
+     * `STATE_ENDED` restarts from the beginning, and `STATE_IDLE` with media still set (a prior
+     * load/network error leaves the player idle) re-prepares it. Without these, flipping
+     * `playWhenReady` alone is a silent no-op in both states. */
     fun play() {
+        when (player.playbackState) {
+            Player.STATE_ENDED -> player.seekTo(0, 0L)
+            Player.STATE_IDLE -> if (currentSession != null && player.mediaItemCount > 0) player.prepare()
+            else -> Unit
+        }
         player.playWhenReady = true
     }
 
@@ -325,6 +371,7 @@ class PlayerNotificationService : Service() {
 
     @Suppress("DEPRECATION")
     fun stop() {
+        stopTicker()
         sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
         sleepTimerManager.cancel()
         player.stop()
@@ -340,15 +387,47 @@ class PlayerNotificationService : Service() {
 
     /** Called by [PlayerListener] with each reduced snapshot. */
     @Suppress("DEPRECATION")
-    fun applyReducerResult(result: ReducerResult) {
+    fun applyReducerResult(result: ReducerResult, isTick: Boolean = false) {
         lastSnapshot = result.snapshot
         stateEmitter?.onPlayerState(result.snapshot)
+        if (isTick) {
+            // Periodic position refresh: the media session extrapolates position from its last
+            // state + speed and widgets only show play/pause, so skip both. Keep the recovery
+            // position fresh, but throttled -- state-change events persist immediately.
+            val now = System.currentTimeMillis()
+            if (now - lastTickPersistAt >= TICK_PERSIST_INTERVAL_MS) {
+                lastTickPersistAt = now
+                persistRecoveryState(result.snapshot)
+            }
+            return
+        }
         updateMediaSessionPlaybackState(result.snapshot)
         persistRecoveryState(result.snapshot)
         notifyWidgets(result.snapshot)
         if (result.stopForeground) {
             stopForeground(true)
         }
+        syncTicker()
+    }
+
+    private fun shouldTick(): Boolean =
+        ::player.isInitialized && (player.isPlaying || player.playbackState == Player.STATE_BUFFERING)
+
+    /** Starts the ticker while the player is playing/buffering, stops it otherwise. Called after
+     * every state-change snapshot, so pause/end/error/idle all cancel it. */
+    private fun syncTicker() {
+        if (shouldTick()) scheduleTick() else stopTicker()
+    }
+
+    private fun scheduleTick() {
+        if (tickScheduled) return
+        tickScheduled = true
+        tickHandler.postDelayed(tickRunnable, POSITION_TICK_MS)
+    }
+
+    private fun stopTicker() {
+        tickHandler.removeCallbacks(tickRunnable)
+        tickScheduled = false
     }
 
     /** Pushes the latest snapshot to every home-screen widget instance (WI-1496 t900 Task 2) --
@@ -413,6 +492,7 @@ class PlayerNotificationService : Service() {
     }
 
     override fun onDestroy() {
+        stopTicker()
         sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
         if (::player.isInitialized) player.release()
         if (::mediaSession.isInitialized) mediaSession.release()

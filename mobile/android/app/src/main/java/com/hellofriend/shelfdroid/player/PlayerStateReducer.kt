@@ -11,13 +11,16 @@ data class PlayerSnapshot(
     val currentTimeMs: Long,
     val durationMs: Long,
     val rate: Float,
-    val error: String? = null
+    val error: String? = null,
+    /** ExoPlayer's `playWhenReady` -- the user's *intent* to be playing. Distinguishes "buffering
+     * and will start playing" from "buffering while paused", which [status] alone cannot. */
+    val playWhenReady: Boolean = false
 )
 
 sealed class PlayerEvent {
-    data class Buffering(val positionMs: Long, val durationMs: Long, val rate: Float) : PlayerEvent()
-    data class Playing(val positionMs: Long, val durationMs: Long, val rate: Float) : PlayerEvent()
-    data class Paused(val positionMs: Long, val durationMs: Long, val rate: Float) : PlayerEvent()
+    data class Buffering(val positionMs: Long, val durationMs: Long, val rate: Float, val playWhenReady: Boolean = false) : PlayerEvent()
+    data class Playing(val positionMs: Long, val durationMs: Long, val rate: Float, val playWhenReady: Boolean = true) : PlayerEvent()
+    data class Paused(val positionMs: Long, val durationMs: Long, val rate: Float, val playWhenReady: Boolean = false) : PlayerEvent()
     data class Ended(val positionMs: Long) : PlayerEvent()
     data class Error(val message: String) : PlayerEvent()
 }
@@ -47,7 +50,7 @@ class PlayerStateReducer {
             lastDurationMs = event.durationMs
             lastRate = event.rate
             ReducerResult(
-                PlayerSnapshot(PlayerStatus.BUFFERING, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate),
+                PlayerSnapshot(PlayerStatus.BUFFERING, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate, playWhenReady = event.playWhenReady),
                 stopForeground = false,
                 syncFinalProgress = false
             )
@@ -56,7 +59,7 @@ class PlayerStateReducer {
             lastDurationMs = event.durationMs
             lastRate = event.rate
             ReducerResult(
-                PlayerSnapshot(PlayerStatus.PLAYING, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate),
+                PlayerSnapshot(PlayerStatus.PLAYING, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate, playWhenReady = event.playWhenReady),
                 stopForeground = false,
                 syncFinalProgress = false
             )
@@ -65,7 +68,7 @@ class PlayerStateReducer {
             lastDurationMs = event.durationMs
             lastRate = event.rate
             ReducerResult(
-                PlayerSnapshot(PlayerStatus.PAUSED, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate),
+                PlayerSnapshot(PlayerStatus.PAUSED, clamp(event.positionMs, event.durationMs), event.durationMs, event.rate, playWhenReady = event.playWhenReady),
                 stopForeground = false,
                 syncFinalProgress = true
             )

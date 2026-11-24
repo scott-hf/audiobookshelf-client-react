@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toDownloadSnapshot } from './downloadTypes'
+import { toDownloadSnapshot, withoutOrphanedComplete, type LocalLibraryItem } from './downloadTypes'
 
 describe('toDownloadSnapshot', () => {
   it('clamps aggregate progress and distinguishes queued from complete', () => {
@@ -33,5 +33,20 @@ describe('toDownloadSnapshot', () => {
   it('defaults libraryItemId/title/error when absent from the raw event', () => {
     const snapshot = toDownloadSnapshot({ id: 'b4', bytesDownloaded: 10, totalBytes: 40, state: 'paused' })
     expect(snapshot).toMatchObject({ id: 'b4', libraryItemId: '', title: '', progressPercent: 25, error: null })
+  })
+})
+
+describe('withoutOrphanedComplete', () => {
+  const local = (libraryItemId: string): LocalLibraryItem => ({ libraryItemId, serverConnectionId: 'c', folderUri: '/x', manifestJson: '{}', completedAt: 1 })
+  const entry = (id: string, state: 'complete' | 'running' | 'failed') => toDownloadSnapshot({ id, libraryItemId: id, bytesDownloaded: 1, totalBytes: 2, state })
+
+  it('drops a complete row that has no offline-library entry (deleted or files missing)', () => {
+    const queue = [entry('gone', 'complete'), entry('kept', 'complete')]
+    expect(withoutOrphanedComplete(queue, [local('kept')]).map((e) => e.id)).toEqual(['kept'])
+  })
+
+  it('leaves in-flight and failed rows alone even without a local entry', () => {
+    const queue = [entry('a', 'running'), entry('b', 'failed')]
+    expect(withoutOrphanedComplete(queue, [])).toEqual(queue)
   })
 })

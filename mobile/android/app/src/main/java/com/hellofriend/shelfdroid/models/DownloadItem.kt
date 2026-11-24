@@ -25,5 +25,17 @@ data class DownloadItem(
     var state: String = "queued",
     var error: String? = null,
     var terminalFailureAt: Long? = null,
+    /** Best-effort presentation metadata captured at enqueue time and copied into the manifest so
+     * a downloaded book is presentable offline. None of it gates the audio download. */
+    var author: String? = null,
+    var narrator: String? = null,
+    /** Total duration in seconds; `0` when unknown. */
+    var duration: Double = 0.0,
+    /** Server-relative (or absolute) cover URL to fetch once the audio is complete; null/blank = none. */
+    var coverServerPath: String? = null,
+    /** Absolute path of the locally stored cover, set only after it was downloaded successfully. */
+    var coverPath: String? = null,
+    /** Chapter list as a JSON array string (`[{id,start,end,title}]`); null when unknown. */
+    var chaptersJson: String? = null,
     val parts: MutableList<DownloadItemPart> = mutableListOf()
 )

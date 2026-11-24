@@ -62,4 +62,21 @@ class PlayerStateReducerTest {
         val result = reducer.reduce(PlayerEvent.Playing(positionMs = 0, durationMs = 1_000, rate = 1f))
         assertNull(result.snapshot.error)
     }
+
+    @Test
+    fun bufferingCarriesPlayWhenReadyIntent() {
+        val reducer = PlayerStateReducer()
+        val willPlay = reducer.reduce(PlayerEvent.Buffering(positionMs = 0, durationMs = 10_000, rate = 1f, playWhenReady = true))
+        val paused = reducer.reduce(PlayerEvent.Buffering(positionMs = 0, durationMs = 10_000, rate = 1f, playWhenReady = false))
+        assertEquals(PlayerStatus.BUFFERING, willPlay.snapshot.status)
+        assertTrue(willPlay.snapshot.playWhenReady)
+        assertFalse(paused.snapshot.playWhenReady)
+    }
+
+    @Test
+    fun playingDefaultsToPlayWhenReadyAndPausedDoesNot() {
+        val reducer = PlayerStateReducer()
+        assertTrue(reducer.reduce(PlayerEvent.Playing(positionMs = 1, durationMs = 10, rate = 1f)).snapshot.playWhenReady)
+        assertFalse(reducer.reduce(PlayerEvent.Paused(positionMs = 1, durationMs = 10, rate = 1f)).snapshot.playWhenReady)
+    }
 }

@@ -12,8 +12,8 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.hellofriend.shelfdroid.data.LocalLibraryItem
-import com.hellofriend.shelfdroid.managers.DbManager
-import java.io.File
+import com.hellofriend.shelfdroid.device.FolderScanner
+import com.hellofriend.shelfdroid.services.DownloadServiceHost
 
 /**
  * Capacitor bridge implementing the exact TS-side contract
@@ -27,11 +27,13 @@ import java.io.File
  */
 @CapacitorPlugin(name = "AbsFileSystem")
 class AbsFileSystem : Plugin() {
-    private val dbManager: DbManager get() = DbManager(File(context.filesDir, "shelfdroid_db"))
+    private val dbManager get() = DownloadServiceHost.database(context)
 
     @PluginMethod
     fun listLocalItems(call: PluginCall) {
-        val items = dbManager.localItems()
+        // A catalog row whose audio files are gone or truncated is not "downloaded": hide it so
+        // the offline library (and the Download button) reflect what is actually on disk.
+        val items = dbManager.localItems().filter { FolderScanner.isLocalItemIntact(it) }
         val arr = JSArray()
         items.forEach { arr.put(localItemJs(it)) }
         val result = JSObject()
@@ -42,16 +44,9 @@ class AbsFileSystem : Plugin() {
     @PluginMethod
     fun deleteLocalItem(call: PluginCall) {
         val libraryItemId = call.getString("libraryItemId") ?: return call.reject("Missing 'libraryItemId'")
-        val item = dbManager.localItem(libraryItemId)
-        if (item != null) {
-            // Internal-storage items only for this milestone (SAF folder deletion needs a
-            // DocumentFile.fromTreeUri round trip -- deferred to Task 3, which owns the actual
-            // download/removal transfer lifecycle this call would otherwise duplicate).
-            if (!item.folderUri.startsWith("content://")) {
-                File(item.folderUri).deleteRecursively()
-            }
-        }
-        dbManager.removeLocalItem(libraryItemId)
+        // Also drops the queue rows (memory and downloads.json) so the book is not resurrected
+        // by the next restart and can be downloaded again.
+        DownloadServiceHost.removeLocal(context, libraryItemId)
         call.resolve()
     }
 

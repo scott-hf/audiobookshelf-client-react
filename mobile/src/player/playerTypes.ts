@@ -6,6 +6,10 @@ export interface PlayerState {
   currentTime: number
   duration: number
   error: string | null
+  /** The user's intent to be playing (ExoPlayer's `playWhenReady`). Distinguishes "buffering and
+   * will start playing" from "buffering while paused" -- `status` alone cannot, which is what made
+   * the play/pause button unresponsive while buffering. */
+  playWhenReady: boolean
 }
 
 export const INITIAL_PLAYER_STATE: PlayerState = {
@@ -13,7 +17,8 @@ export const INITIAL_PLAYER_STATE: PlayerState = {
   itemId: null,
   currentTime: 0,
   duration: 0,
-  error: null
+  error: null,
+  playWhenReady: false
 }
 
 /**
@@ -39,6 +44,7 @@ export interface NativePlayerState {
   currentTime: number
   duration: number
   playbackRate: number
+  playWhenReady: boolean
   error?: string
 }
 

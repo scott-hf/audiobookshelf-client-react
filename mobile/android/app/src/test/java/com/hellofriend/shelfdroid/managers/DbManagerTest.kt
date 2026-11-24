@@ -154,4 +154,121 @@ class DbManagerTest {
         assertFalse(FolderScanner.isPartFileMissing(presentPart))
         assertTrue(FolderScanner.isPartFileMissing(missingPart))
     }
+
+    // ---- Local library listing: missing / truncated files are not "downloaded" ----
+
+    private fun localItemWithTrack(dir: File, size: Long?): LocalLibraryItem {
+        val track = org.json.JSONObject().put("trackIndex", 0).put("filename", "track-0.mp3").put("path", File(dir, "track-0.mp3").absolutePath)
+        if (size != null) track.put("size", size)
+        val manifest = org.json.JSONObject().put("tracks", org.json.JSONArray().put(track)).toString()
+        return LocalLibraryItem("item-x", "conn-1", dir.absolutePath, manifest, 1L)
+    }
+
+    @Test
+    fun localItemWithAllFilesPresentIsIntact() {
+        val dir = tempFolder.newFolder("intact")
+        File(dir, "track-0.mp3").writeText("12345")
+        assertTrue(FolderScanner.isLocalItemIntact(localItemWithTrack(dir, 5L)))
+    }
+
+    @Test
+    fun localItemWithAMissingFileIsNotIntact() {
+        val dir = tempFolder.newFolder("gone")
+        assertFalse(FolderScanner.isLocalItemIntact(localItemWithTrack(dir, 5L)))
+    }
+
+    @Test
+    fun localItemWithATruncatedFileIsNotIntact() {
+        val dir = tempFolder.newFolder("truncated")
+        File(dir, "track-0.mp3").writeText("123")
+        assertFalse(FolderScanner.isLocalItemIntact(localItemWithTrack(dir, 5L)))
+    }
+
+    @Test
+    fun localItemWithAnEmptyFileIsNotIntactEvenWhenSizeIsUnknown() {
+        val dir = tempFolder.newFolder("empty")
+        File(dir, "track-0.mp3").writeText("")
+        assertFalse(FolderScanner.isLocalItemIntact(localItemWithTrack(dir, null)))
+    }
+
+    @Test
+    fun localItemWithoutATrackListFallsBackToTheFolderContents() {
+        val dir = tempFolder.newFolder("legacy")
+        val legacy = LocalLibraryItem("item-y", "conn-1", dir.absolutePath, """{"title":"x"}""", 1L)
+        assertFalse(FolderScanner.isLocalItemIntact(legacy))
+        File(dir, "a.m4b").writeText("audio")
+        assertTrue(FolderScanner.isLocalItemIntact(legacy))
+    }
+
+    // ---- Index durability: corrupt file, atomic write, concurrent writers ----
+
+    @Test
+    fun corruptDownloadsFileIsTreatedAsEmptyAndPreservedNotThrown() {
+        File(tempFolder.root, "downloads.json").writeText("[{\"id\":\"b1\",")
+        val db = testDatabase()
+
+        assertTrue(db.downloads().isEmpty())
+        assertTrue("a copy of the corrupt file must be kept", File(tempFolder.root, "downloads.json.corrupt").exists())
+
+        // And the database is usable again afterwards.
+        db.saveDownload(download("b2", "queued"))
+        assertEquals(listOf("b2"), db.downloads().map { it.id })
+    }
+
+    @Test
+    fun corruptLocalItemsFileIsTreatedAsEmpty() {
+        File(tempFolder.root, "local_library_items.json").writeText("not json at all")
+        assertTrue(testDatabase().localItems().isEmpty())
+    }
+
+    @Test
+    fun oneMalformedRowDoesNotDiscardItsSiblings() {
+        val good = org.json.JSONObject(
+            """{"id":"ok","libraryItemId":"item-ok","title":"T","serverConnectionId":"c","bytesDownloaded":1,"totalBytes":2,"state":"queued","parts":[]}"""
+        )
+        File(tempFolder.root, "downloads.json").writeText("""[{"id":"broken"},$good]""")
+
+        assertEquals(listOf("ok"), testDatabase().downloads().map { it.id })
+    }
+
+    @Test
+    fun writesLeaveNoTempFileBehindAndReplaceTheTarget() {
+        val db = testDatabase()
+        db.saveDownload(download("b1", "running"))
+        db.saveDownload(download("b1", "paused"))
+
+        assertFalse(File(tempFolder.root, "downloads.json.tmp").exists())
+        assertEquals("paused", testDatabase().downloads().single().state)
+    }
+
+    @Test
+    fun concurrentWritersThroughSeparateInstancesLoseNoRows() {
+        val threads = 8
+        val perThread = 15
+        val start = java.util.concurrent.CountDownLatch(1)
+        val errors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val workers = (0 until threads).map { t ->
+            Thread {
+                try {
+                    start.await()
+                    val db = testDatabase() // a fresh instance per writer, like the plugin layer does
+                    repeat(perThread) { i ->
+                        db.saveDownload(download("t$t-$i", "queued"))
+                        db.saveLocalItem(localItem("t$t-$i"))
+                        db.downloads() // interleave reads with writes
+                    }
+                } catch (e: Throwable) {
+                    errors.add(e)
+                }
+            }.also { it.start() }
+        }
+        start.countDown()
+        workers.forEach { it.join() }
+
+        assertTrue("writers threw: $errors", errors.isEmpty())
+        val db = testDatabase()
+        assertEquals(threads * perThread, db.downloads().size)
+        assertEquals(threads * perThread, db.localItems().size)
+        assertFalse(File(tempFolder.root, "downloads.json.corrupt").exists())
+    }
 }

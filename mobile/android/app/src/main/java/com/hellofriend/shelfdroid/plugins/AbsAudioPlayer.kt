@@ -26,6 +26,8 @@ import com.hellofriend.shelfdroid.player.PlayerSnapshot
  */
 @CapacitorPlugin(name = "AbsAudioPlayer")
 class AbsAudioPlayer : Plugin() {
+    // Written on the main thread (ServiceConnection), read on Capacitor's plugin thread.
+    @Volatile
     private var service: PlayerNotificationService? = null
     private var bound = false
 
@@ -72,60 +74,53 @@ class AbsAudioPlayer : Plugin() {
             audioTracks = tracks
         )
 
-        svc.load(session, accessToken, serverUrl)
-        call.resolve()
+        onMainThread(call) { svc.load(session, accessToken, serverUrl) }
     }
 
     @PluginMethod
     fun play(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
-        svc.play()
-        call.resolve()
+        onMainThread(call) { svc.play() }
     }
 
     @PluginMethod
     fun pause(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
-        svc.pause()
-        call.resolve()
+        onMainThread(call) { svc.pause() }
     }
 
     @PluginMethod
     fun seek(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
         val seconds = call.getDouble("seconds") ?: 0.0
-        svc.seekTo((seconds * 1000).toLong())
-        call.resolve()
+        onMainThread(call) { svc.seekTo((seconds * 1000).toLong()) }
     }
 
     @PluginMethod
     fun setRate(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
         val rate = call.getFloat("rate", 1f) ?: 1f
-        svc.setRate(rate)
-        call.resolve()
+        onMainThread(call) { svc.setRate(rate) }
     }
 
     @PluginMethod
     fun stop(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
-        svc.stop()
-        call.resolve()
+        onMainThread(call) { svc.stop() }
     }
 
     @PluginMethod
     fun setSleepTimer(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
         val seconds = call.getDouble("seconds")?.toLong()
-        svc.setSleepTimer(seconds)
-        call.resolve()
+        onMainThread(call) { svc.setSleepTimer(seconds) }
     }
 
     @PluginMethod
     fun getState(call: PluginCall) {
         val svc = service
         if (svc != null) {
-            call.resolve(playerSnapshotJs(svc.getState(), svc.currentSession?.id))
+            bridge.executeOnMainThread { call.resolve(playerSnapshotJs(svc.getState(), svc.currentSession?.id)) }
             return
         }
         // WI-1496 t700 Task 4: `load()` (the Capacitor plugin lifecycle method above, not this
@@ -142,20 +137,37 @@ class AbsAudioPlayer : Plugin() {
         }, GET_STATE_BIND_RETRY_MS)
     }
 
+    /** Capacitor runs every `@PluginMethod` on its own "CapacitorPlugins" HandlerThread, but the
+     * ExoPlayer inside [PlayerNotificationService] is built on the main looper and must only be
+     * accessed from it. Runs [action] on the main thread and settles [call] there: resolves after
+     * [action] returns, rejects if it throws -- exactly once either way, since [action] itself
+     * never touches the call. */
+    private fun onMainThread(call: PluginCall, action: () -> Unit) {
+        bridge.executeOnMainThread {
+            try {
+                action()
+                call.resolve()
+            } catch (e: Exception) {
+                call.reject(e.message ?: "Native player call failed", e)
+            }
+        }
+    }
+
     /** Shapes a snapshot into TS's `NativePlayerState` (the `playerState` event payload):
-     * `{state, currentTime, duration, playbackRate, error?}`, seconds not milliseconds. */
+     * `{state, currentTime, duration, playbackRate, playWhenReady, error?}`, seconds not milliseconds. */
     private fun nativePlayerStateJs(snapshot: PlayerSnapshot): JSObject {
         val obj = JSObject()
         obj.put("state", snapshot.status.name.lowercase())
         obj.put("currentTime", snapshot.currentTimeMs / 1000.0)
         obj.put("duration", snapshot.durationMs / 1000.0)
         obj.put("playbackRate", snapshot.rate)
+        obj.put("playWhenReady", snapshot.playWhenReady)
         snapshot.error?.let { obj.put("error", it) }
         return obj
     }
 
     /** Shapes a snapshot into TS's `PlayerSnapshot` (the `getState()` return value):
-     * `{status, itemId, currentTime, duration, error, rate}`, seconds not milliseconds. */
+     * `{status, itemId, currentTime, duration, error, rate, playWhenReady}`, seconds not milliseconds. */
     private fun playerSnapshotJs(snapshot: PlayerSnapshot, itemId: String?): JSObject {
         val obj = JSObject()
         obj.put("status", snapshot.status.name.lowercase())
@@ -163,6 +175,7 @@ class AbsAudioPlayer : Plugin() {
         obj.put("currentTime", snapshot.currentTimeMs / 1000.0)
         obj.put("duration", snapshot.durationMs / 1000.0)
         obj.put("rate", snapshot.rate)
+        obj.put("playWhenReady", snapshot.playWhenReady)
         obj.put("error", snapshot.error)
         return obj
     }

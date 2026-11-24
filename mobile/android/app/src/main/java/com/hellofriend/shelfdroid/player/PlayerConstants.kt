@@ -17,3 +17,25 @@ const val JUMP_BACKWARD_MS = 10_000L
 // downloader's `file://`/`content://` offline-playback URIs (see `offlineSource.ts`'s
 // `toLocalUri`).
 val LOCAL_URI_SCHEMES = listOf("http://", "https://", "file://", "content://")
+
+// Position ticker: ExoPlayer only reports state *changes*, so while playing/buffering the service
+// re-emits the snapshot on this period to keep the JS-side position (and jump-relative seeks) live.
+const val POSITION_TICK_MS = 500L
+
+// Throttle for persisting the recovery snapshot from ticks (state-change events persist
+// immediately; ticks only need to keep the saved position reasonably fresh).
+const val TICK_PERSIST_INTERVAL_MS = 5_000L
+
+// Stall watchdog: network timeouts and retry budget for streaming. The ExoPlayer defaults (8s
+// connect/read, 3 retries for non-live progressive) leave a dead connection buffering for a long
+// time with no way for the UI to tell; these fail fast enough that the error/retry path engages.
+const val HTTP_CONNECT_TIMEOUT_MS = 10_000
+const val HTTP_READ_TIMEOUT_MS = 15_000
+const val LOAD_RETRY_COUNT = 4
+
+// DefaultLoadControl buffer windows (ms): enough headroom for long-form speech without holding
+// minutes of audio in memory, and a short re-buffer threshold so playback resumes quickly after a stall.
+const val MIN_BUFFER_MS = 30_000
+const val MAX_BUFFER_MS = 120_000
+const val BUFFER_FOR_PLAYBACK_MS = 1_500
+const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_000

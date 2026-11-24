@@ -21,22 +21,37 @@ class PlayerListener(private val service: PlayerNotificationService) : Player.Li
     }
 
     override fun onEvents(player: Player, events: Player.Events) {
-        if (!events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && !events.contains(Player.EVENT_IS_PLAYING_CHANGED)) {
-            return
-        }
+        // PLAY_WHEN_READY_CHANGED: a tap on Play/Pause while buffering changes only playWhenReady
+        // (no playback-state or isPlaying change), so without it JS never learns the new intent.
+        // POSITION_DISCONTINUITY: seeks and track transitions move the position without any state
+        // change, and the position ticker alone would leave a paused player's UI stale.
+        val relevant = events.containsAny(
+            Player.EVENT_PLAYBACK_STATE_CHANGED,
+            Player.EVENT_IS_PLAYING_CHANGED,
+            Player.EVENT_PLAY_WHEN_READY_CHANGED,
+            Player.EVENT_POSITION_DISCONTINUITY
+        )
+        if (!relevant) return
+        emitSnapshot(player)
+    }
 
+    /** Reduces the player's current state into a snapshot and forwards it to the service.
+     * [isTick] marks a periodic position refresh (see [PlayerNotificationService]'s ticker), which
+     * skips the heavier media-session/widget/persistence work an actual state change needs. */
+    fun emitSnapshot(player: Player, isTick: Boolean = false) {
         val positionMs = player.currentPosition
         val durationMs = if (player.duration == C.TIME_UNSET) 0L else player.duration
         val rate = player.playbackParameters.speed
+        val playWhenReady = player.playWhenReady
 
         val event = when {
             player.playbackState == Player.STATE_ENDED -> PlayerEvent.Ended(positionMs)
-            player.playbackState == Player.STATE_BUFFERING -> PlayerEvent.Buffering(positionMs, durationMs, rate)
-            player.isPlaying -> PlayerEvent.Playing(positionMs, durationMs, rate)
-            player.playbackState == Player.STATE_READY -> PlayerEvent.Paused(positionMs, durationMs, rate)
+            player.playbackState == Player.STATE_BUFFERING -> PlayerEvent.Buffering(positionMs, durationMs, rate, playWhenReady)
+            player.isPlaying -> PlayerEvent.Playing(positionMs, durationMs, rate, playWhenReady)
+            player.playbackState == Player.STATE_READY -> PlayerEvent.Paused(positionMs, durationMs, rate, playWhenReady)
             else -> return // STATE_IDLE with nothing loaded yet -- no snapshot to emit
         }
 
-        service.applyReducerResult(reducer.reduce(event))
+        service.applyReducerResult(reducer.reduce(event), isTick)
     }
 }

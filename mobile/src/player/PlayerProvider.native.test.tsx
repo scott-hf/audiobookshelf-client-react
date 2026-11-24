@@ -25,7 +25,7 @@ const nativePlugin = vi.hoisted(() => ({
   setRate: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
   setSleepTimer: vi.fn().mockResolvedValue(undefined),
-  getState: vi.fn().mockResolvedValue({ status: 'idle', itemId: null, currentTime: 0, duration: 0, error: null, rate: 1 }),
+  getState: vi.fn().mockResolvedValue({ status: 'idle', itemId: null, currentTime: 0, duration: 0, error: null, rate: 1, playWhenReady: false }),
   addListener: vi.fn().mockResolvedValue({ remove: () => Promise.resolve() })
 }))
 

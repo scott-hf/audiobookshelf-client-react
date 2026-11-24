@@ -65,7 +65,7 @@ export class HtmlAudioPlayer {
     await this.teardown()
     if (generation !== this.playGeneration) return
 
-    this.setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null })
+    this.setState({ status: 'loading', itemId, currentTime: 0, duration: 0, error: null, playWhenReady: false })
 
     try {
       const session = await this.api.startSession(itemId, {
@@ -108,12 +108,12 @@ export class HtmlAudioPlayer {
         return
       }
 
-      this.setState({ status: 'playing', duration: track.duration, currentTime: audio.currentTime })
+      this.setState({ status: 'playing', playWhenReady: true, duration: track.duration, currentTime: audio.currentTime })
       this.startSyncTimer()
     } catch (error) {
       // A superseded attempt must not clobber the newer attempt's state or surface its failure.
       if (generation !== this.playGeneration) return
-      this.setState({ status: 'error', error: error instanceof Error ? error.message : 'Playback failed' })
+      this.setState({ status: 'error', playWhenReady: false, error: error instanceof Error ? error.message : 'Playback failed' })
       throw error
     }
   }
@@ -122,14 +122,14 @@ export class HtmlAudioPlayer {
     if (!this.audio) return
     this.audio.pause()
     this.stopSyncTimer()
-    this.setState({ status: 'paused', currentTime: this.audio.currentTime })
+    this.setState({ status: 'paused', playWhenReady: false, currentTime: this.audio.currentTime })
     this.syncNow()
   }
 
   async resume(): Promise<void> {
     if (!this.audio) return
     await this.audio.play()
-    this.setState({ status: 'playing' })
+    this.setState({ status: 'playing', playWhenReady: true })
     this.startSyncTimer()
   }
 
@@ -169,7 +169,7 @@ export class HtmlAudioPlayer {
     // installing them after we have already cleaned up.
     this.playGeneration++
     await this.teardown()
-    this.setState({ status: 'idle', itemId: null })
+    this.setState({ status: 'idle', itemId: null, playWhenReady: false })
   }
 
   /** Releases the current audio element and ABS session. Does not touch `playGeneration` --

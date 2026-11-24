@@ -13,6 +13,9 @@ export interface AbsDownloaderEnqueueOptions {
   accessToken: string
   serverUrl: string
   serverConnectionId: string
+  /** Wi-Fi-only preference for this transfer (`AbsDownloader.kt` `enqueue`). Optional: omitted, the
+   * native side keeps the policy last set by `setWifiOnly`. */
+  wifiOnly?: boolean
 }
 
 /**
@@ -35,6 +38,10 @@ export interface AbsDownloaderPlugin {
    * `RawDownloadEvent`-shaped (no `progressPercent`, computed client-side by `toDownloadSnapshot`),
    * not the already-derived `DownloadSnapshot` this Task 1 sketch originally declared. */
   listQueue(): Promise<{ items: RawDownloadEvent[] }>
+  /** Pushes the Wi-Fi-only preference to the native transfer policy (`AbsDownloader.kt`
+   * `setWifiOnly` -> `DownloadServiceHost.setWifiOnly`). `DownloadProvider` calls it on mount and
+   * whenever the setting changes, so a toggle reaches native while downloads are parked. */
+  setWifiOnly(options: { wifiOnly: boolean }): Promise<void>
   addListener(event: 'downloadProgress', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>
   addListener(event: 'downloadComplete', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>
   addListener(event: 'downloadFailed', listener: (state: RawDownloadEvent) => void): Promise<PluginListenerHandle>

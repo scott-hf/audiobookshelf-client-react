@@ -33,6 +33,7 @@ function mapNativeState(native: NativePlayerState): Partial<PlayerSnapshot> {
     currentTime,
     duration,
     rate: native.playbackRate,
+    playWhenReady: native.playWhenReady,
     error: native.state === 'error' ? (native.error ?? 'Native playback failed') : null
   }
 }
@@ -57,7 +58,7 @@ export function createNativeAudioPlayer(plugin: AbsAudioPlayerPlugin): NativeAud
       return state
     },
     async load(options) {
-      setState({ status: 'loading', itemId: options.session.id, currentTime: 0, duration: 0, error: null })
+      setState({ status: 'loading', itemId: options.session.id, currentTime: 0, duration: 0, error: null, playWhenReady: false })
       await plugin.load(options)
     },
     async play() {
@@ -74,7 +75,7 @@ export function createNativeAudioPlayer(plugin: AbsAudioPlayerPlugin): NativeAud
     },
     async stop() {
       await plugin.stop()
-      setState({ status: 'idle', itemId: null })
+      setState({ status: 'idle', itemId: null, playWhenReady: false })
     },
     async setSleepTimer(seconds) {
       await plugin.setSleepTimer({ seconds })
