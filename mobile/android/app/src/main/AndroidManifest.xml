@@ -54,6 +54,7 @@
         <service
             android:name=".player.PlayerNotificationService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />
 
         <!-- Android Auto support (WI-1496 t900 Task 1). -->
@@ -97,6 +98,9 @@
     <!-- Foreground native audio playback service (WI-1496 t700) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- ExoPlayer's setWakeMode: keeps CPU (and Wi-Fi when streaming) awake while audio plays with
+         the screen off. Held only during playback. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Foreground offline-download transfer service (WI-1496 t800 Task 3). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

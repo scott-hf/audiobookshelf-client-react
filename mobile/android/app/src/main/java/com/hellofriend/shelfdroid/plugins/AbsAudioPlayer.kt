@@ -7,7 +7,7 @@ import android.content.ServiceConnection
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import androidx.core.content.ContextCompat
+import android.util.Log
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -52,7 +52,19 @@ class AbsAudioPlayer : Plugin() {
 
     override fun load() {
         val intent = Intent(context, PlayerNotificationService::class.java)
-        ContextCompat.startForegroundService(context, intent)
+        // Plain `startService`, not `startForegroundService`: the latter obliges the service to call
+        // `startForeground()` within seconds or the system kills the app
+        // (`ForegroundServiceDidNotStartInTimeException`), but this service only enters the
+        // foreground once something is actually playing (PlayerNotificationListener), which may be
+        // minutes after the WebView attaches. Starting it is allowed here because plugin load runs
+        // with the activity in the foreground; the service is promoted later, on the user's play.
+        try {
+            context.startService(intent)
+        } catch (e: IllegalStateException) {
+            // Background-start restriction: binding below still creates the service, which is all
+            // that is needed until playback starts.
+            Log.w(TAG, "startService refused, relying on bind only: ${e.message}")
+        }
         context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
@@ -106,7 +118,10 @@ class AbsAudioPlayer : Plugin() {
     @PluginMethod
     fun stop(call: PluginCall) {
         val svc = service ?: return call.reject("Native player service not bound yet")
-        onMainThread(call) { svc.stop() }
+        // `keepForeground`: JS is replacing the item and a `load()` follows -- see
+        // PlayerNotificationService.stop for why the foreground service must survive the gap.
+        val keepForeground = call.getBoolean("keepForeground", false) ?: false
+        onMainThread(call) { svc.stop(keepForeground) }
     }
 
     @PluginMethod
@@ -189,6 +204,7 @@ class AbsAudioPlayer : Plugin() {
     }
 
     companion object {
+        private const val TAG = "AbsAudioPlayer"
         private const val GET_STATE_BIND_RETRY_MS = 250L
     }
 }

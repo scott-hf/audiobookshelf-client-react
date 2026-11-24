@@ -5,6 +5,7 @@ import BookCover from '../components/BookCover'
 import LoadingView from '../components/LoadingView'
 import Btn from '../components/ui/Btn'
 import { useDownloads } from '../downloads/DownloadProvider'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
 import type { AbsLibraryItem } from '../types/abs'
 
 function formatDuration(seconds: number): string {
@@ -15,6 +16,7 @@ function formatDuration(seconds: number): string {
 }
 
 export default function BookDetailsPage() {
+  const t = useTypeSafeTranslations()
   const { libraryId, itemId } = useParams<{ libraryId: string; itemId: string }>()
   const { client } = useAuth()
   const navigate = useNavigate()
@@ -33,12 +35,12 @@ export default function BookDetailsPage() {
         if (!cancelled) setItem(result)
       })
       .catch(() => {
-        if (!cancelled) setError('Could not load this book.')
+        if (!cancelled) setError(t('MessageMobileBookLoadFailed'))
       })
     return () => {
       cancelled = true
     }
-  }, [client, itemId])
+  }, [client, itemId, t])
 
   if (!itemId || !libraryId) return null
   if (error)
@@ -47,7 +49,7 @@ export default function BookDetailsPage() {
         {error}
       </p>
     )
-  if (!item) return <LoadingView label="Loading book…" />
+  if (!item) return <LoadingView label={t('MessageMobileLoadingBook')} />
 
   const { metadata, duration } = item.media
   const progress = item.userMediaProgress
@@ -98,7 +100,7 @@ export default function BookDetailsPage() {
       {inProgress && (
         <div className="mb-4">
           <div className="text-foreground-subdued mb-1 flex justify-between text-xs">
-            <span>Resume from {Math.round(progress.currentTime / 60)} min</span>
+            <span>{t('MessageMobileResumeFromMinutes', { minutes: Math.round(progress.currentTime / 60) })}</span>
             <span>{progressPercent}%</span>
           </div>
           <div className="bg-track-bg h-1.5 w-full overflow-hidden rounded-full">
@@ -107,7 +109,7 @@ export default function BookDetailsPage() {
         </div>
       )}
 
-      <div className="mb-5 flex gap-2">
+      <div className={`${alreadyLocal ? 'mb-5' : 'mb-2'} flex gap-2`}>
         <Btn
           color="bg-accent"
           className="flex-1 justify-center gap-1.5"
@@ -116,15 +118,21 @@ export default function BookDetailsPage() {
           <span className="material-symbols fill text-xl" aria-hidden="true">
             play_arrow
           </span>
-          Play
+          {t('ButtonPlay')}
         </Btn>
         <Btn color="bg-primary" disabled={downloadDisabled} loading={downloading} onClick={() => void handleDownload()} className="justify-center gap-1.5">
           <span className="material-symbols text-xl" aria-hidden="true">
             {alreadyLocal ? 'download_done' : 'download'}
           </span>
-          {alreadyLocal ? 'Downloaded' : 'Download'}
+          {alreadyLocal ? t('LabelMobileDownloadComplete') : t('LabelMobileDownloadToDevice')}
         </Btn>
       </div>
+      {/* Play streams from the server; only Download puts the book on this device for offline listening. */}
+      {!alreadyLocal && (
+        <p className="text-foreground-subdued mb-5 text-xs leading-snug" data-testid="book-download-hint">
+          {t('MessageMobileDownloadHint')}
+        </p>
+      )}
 
       {metadata.description && <p className="text-foreground-muted text-sm leading-relaxed whitespace-pre-line">{metadata.description}</p>}
     </article>

@@ -160,6 +160,16 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
         if (!accessToken || !serverUrl) throw new Error('Not authenticated')
 
         await pushWifiOnly()
+        // List results carry no chapters; the expanded item does. Metadata is best-effort, so a
+        // failed lookup just downloads what we already have.
+        let detailed = item
+        if (!item.media.chapters) {
+          try {
+            detailed = (await client.getLibraryItem(item.id)) ?? item
+          } catch {
+            detailed = item
+          }
+        }
         await AbsDownloaderNative.enqueue({
           libraryItemId: item.id,
           title: item.media.metadata.title,
@@ -169,7 +179,14 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
           // This milestone has no multi-account concept -- the server URL itself is a stable
           // per-connection identity, matching how the native side scopes internal storage
           // (`downloads/{serverConnectionId}/{libraryItemId}`, see `FolderScanner.finalInternalPath`).
-          serverConnectionId: serverUrl
+          serverConnectionId: serverUrl,
+          coverPath: `/api/items/${encodeURIComponent(item.id)}/cover`,
+          metadata: {
+            author: detailed.media.metadata.authorName ?? undefined,
+            narrator: detailed.media.metadata.narratorName ?? undefined,
+            duration: detailed.media.duration ?? undefined,
+            chapters: detailed.media.chapters ?? undefined
+          }
         })
       } finally {
         await closeSessionQuietly(client, session)

@@ -18,10 +18,23 @@ class PlayerNotificationListener(private val service: PlayerNotificationService)
             return
         }
         Log.d(tag, "onNotificationPosted $notificationId, starting foreground")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            service.startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            service.startForeground(notificationId, notification)
+        // Entering the foreground is safe while the app is visible, and a no-op refresh when the
+        // service is already foreground (which `PlayerNotificationService.stop(keepForeground)` now
+        // preserves across an item change). It is NOT guaranteed from the background: on Android 12+
+        // `startForeground()` throws `ForegroundServiceStartNotAllowedException` (an
+        // `IllegalStateException`) unless an exemption applies (e.g. a media-button event). Audio is
+        // already playing at that point, so a refused promotion must degrade (the notification
+        // still posts, the service just is not foreground) rather than crash the whole app.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                service.startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                service.startForeground(notificationId, notification)
+            }
+        } catch (e: IllegalStateException) {
+            Log.w(tag, "startForeground refused (app in background without an exemption?): ${e.message}")
+        } catch (e: SecurityException) {
+            Log.w(tag, "startForeground not permitted: ${e.message}")
         }
     }
 

@@ -6,20 +6,9 @@ import Btn from '../components/ui/Btn'
 import PageMessage from '../components/ui/PageMessage'
 import { useDownloads } from '../downloads/DownloadProvider'
 import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
+import { localCoverSrc, parseLocalManifest } from '../player/offlineSource'
 import { SettingsContext } from '../settings/SettingsProvider'
 import { DefaultMobileSettings } from '../settings/settingsTypes'
-
-/** Best-effort title from a persisted manifest -- falls back to the raw id if the manifest JSON
- * doesn't carry a `title` field (the native manifest shape is deliberately minimal, see
- * `DownloadItemManager.manifestJsonFor`). */
-function manifestTitle(manifestJson: string, fallback: string): string {
-  try {
-    const parsed = JSON.parse(manifestJson) as { title?: string }
-    return parsed.title ?? fallback
-  } catch {
-    return fallback
-  }
-}
 
 export default function DownloadsPage() {
   const { queue, localItems, pause, resume, cancel, remove } = useDownloads()
@@ -89,13 +78,23 @@ export default function DownloadsPage() {
         ) : (
           <div className="flex flex-col gap-2" data-testid="downloads-local-items">
             {localItems.map((item) => {
-              const title = manifestTitle(item.manifestJson, item.libraryItemId)
+              const manifest = parseLocalManifest(item)
+              const title = manifest?.title ?? item.libraryItemId
+              const author = manifest?.author
+              const coverSrc = localCoverSrc(manifest?.coverPath)
               return (
                 <div key={item.libraryItemId} className="bg-primary border-border flex items-center gap-3 rounded-md border p-3" data-testid="download-local-row">
-                  <span className="material-symbols text-accent text-xl" aria-hidden="true">
-                    download_done
-                  </span>
-                  <p className="text-foreground min-w-0 flex-1 truncate text-sm font-semibold">{title}</p>
+                  {coverSrc ? (
+                    <img src={coverSrc} alt="" data-testid="download-local-cover" className="h-12 w-8 shrink-0 rounded-sm object-cover" />
+                  ) : (
+                    <span className="material-symbols text-accent text-xl" aria-hidden="true">
+                      download_done
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-foreground truncate text-sm font-semibold">{title}</p>
+                    {author && <p className="text-foreground-muted truncate text-xs">{author}</p>}
+                  </div>
                   <Btn size="small" color="bg-accent" onClick={() => handlePlayOffline(item.libraryItemId)} className="justify-center">
                     {t('ButtonMobilePlayOffline')}
                   </Btn>

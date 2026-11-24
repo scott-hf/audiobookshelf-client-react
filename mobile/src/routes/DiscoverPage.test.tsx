@@ -91,6 +91,36 @@ describe('DiscoverPage', () => {
     )
   })
 
+  it('explains before any search that acquiring is server-side and offline listening needs a device download', () => {
+    renderDiscover({ searchAudiobooks: vi.fn(), createAcquisition: vi.fn(), listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+    const explainer = screen.getByTestId('discover-explainer')
+    expect(explainer).toHaveTextContent(/server/i)
+    expect(explainer).toHaveTextContent(/download it to your device/i)
+    expect(explainer).toHaveTextContent(/offline/i)
+  })
+
+  it('states both steps (server-side acquisition, then device download) in the confirm dialog', async () => {
+    const user = userEvent.setup()
+    const searchAudiobooks = vi.fn().mockResolvedValue({
+      searchSessionId: 'search-1',
+      results: [release({ releaseId: 'rel-1', title: 'Project Hail Mary' })]
+    } satisfies SearchResponse)
+
+    renderDiscover({ searchAudiobooks, createAcquisition: vi.fn(), listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+    await user.type(screen.getByLabelText('Search audiobooks'), 'Project Hail Mary')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    await user.click(await screen.findByRole('button', { name: 'Acquire' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText('Acquire "Project Hail Mary"?')).toBeInTheDocument()
+    const description = within(dialog).getByTestId('confirm-dialog-description')
+    expect(description).toHaveTextContent(/Step 1:.*server.*Nothing is saved to this phone/s)
+    expect(description).toHaveTextContent(/Step 2:.*download it to your device.*offline/s)
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+  })
+
   it('disables Acquire for non-requestable releases', async () => {
     const user = userEvent.setup()
     const searchAudiobooks = vi.fn().mockResolvedValue({

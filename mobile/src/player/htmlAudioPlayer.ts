@@ -162,8 +162,8 @@ export class HtmlAudioPlayer {
     }
   }
 
-  /** Explicit stop, item replacement, or app-background: stop syncing, report final progress,
-   * and release the audio element. */
+  /** Explicit stop or item replacement: stop syncing, report final progress, and release the audio
+   * element. (No longer called on app-background -- PlayerProvider lets audio keep playing there.) */
   async close(): Promise<void> {
     // Supersede any in-flight play() so it tears down its own audio/session instead of
     // installing them after we have already cleaned up.

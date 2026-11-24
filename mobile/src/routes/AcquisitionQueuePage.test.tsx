@@ -50,9 +50,38 @@ describe('AcquisitionQueuePage', () => {
     ])
     renderQueue({ listAcquisitions, status: vi.fn().mockResolvedValue(null) })
 
-    const links = await screen.findAllByRole('link', { name: 'Open Book' })
+    const links = await screen.findAllByRole('link', { name: 'Open book to download' })
     expect(links).toHaveLength(1)
     expect(links[0]).toHaveAttribute('href', '/library/lib1/item/abs1')
+  })
+
+  it('says the queue is server-side, and tells the user to download to the device once an acquisition is available', async () => {
+    const listAcquisitions = vi.fn().mockResolvedValue([
+      acquisition({ id: 'acq-done', title: 'Done Book', state: 'available', absItemId: 'abs1' }),
+      acquisition({ id: 'acq-busy', title: 'Busy Book', state: 'downloading' })
+    ])
+    renderQueue({ listAcquisitions, status: vi.fn().mockResolvedValue(null) })
+
+    await screen.findByText('Done Book')
+    expect(screen.getByTestId('acquisition-queue-explainer')).toHaveTextContent(/server library, not to this phone/i)
+
+    const doneRow = screen.getByText('Done Book').closest('[data-testid="acquisition-row"]') as HTMLElement
+    expect(within(doneRow).getByText('In server library')).toBeInTheDocument()
+    expect(within(doneRow).getByTestId('acquisition-next-step')).toHaveTextContent(/download it to your device/i)
+
+    // In-flight rows describe the server's fetch, not a device download, and carry no next-step prompt.
+    const busyRow = screen.getByText('Busy Book').closest('[data-testid="acquisition-row"]') as HTMLElement
+    expect(within(busyRow).getByText('Fetching to server')).toBeInTheDocument()
+    expect(within(busyRow).queryByTestId('acquisition-next-step')).not.toBeInTheDocument()
+  })
+
+  it('falls back to wording only, with no link, when an available acquisition has no abs item id', async () => {
+    const listAcquisitions = vi.fn().mockResolvedValue([acquisition({ id: 'acq-noid', title: 'No Id Book', state: 'available', absItemId: null })])
+    renderQueue({ listAcquisitions, status: vi.fn().mockResolvedValue(null) })
+
+    await screen.findByText('No Id Book')
+    expect(screen.queryByRole('link', { name: 'Open book to download' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('acquisition-next-step')).toHaveTextContent(/find it in your library and download it to your device/i)
   })
 
   it('retries a failed acquisition and cancels a queued one, tracked per acquisition id', async () => {

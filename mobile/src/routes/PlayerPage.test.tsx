@@ -41,8 +41,10 @@ vi.mock('../native/castPlugin', () => ({
   }
 }))
 
+const downloadedItems = vi.hoisted(() => ({ localItems: [] as Array<Record<string, unknown>> }))
+
 vi.mock('../downloads/DownloadProvider', () => ({
-  useDownloads: () => ({ queue: [], localItems: [], pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), download: vi.fn(), isLocal: () => false })
+  useDownloads: () => ({ queue: [], localItems: downloadedItems.localItems, pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), download: vi.fn(), isLocal: () => false })
 }))
 
 type SessionResult = { id: string; currentTime: number; audioTracks: Array<{ index: number; contentUrl: string; duration: number }> }
@@ -97,6 +99,7 @@ async function settleLoaded() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  downloadedItems.localItems = []
   nativePlugin.load.mockResolvedValue(undefined)
   nativePlugin.play.mockResolvedValue(undefined)
   nativePlugin.pause.mockResolvedValue(undefined)
@@ -110,6 +113,24 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('PlayerPage offline metadata fallback', () => {
+  it('shows the downloaded manifest title, author and local cover when the server item is unreachable', async () => {
+    downloadedItems.localItems = [
+      {
+        libraryItemId: 'b1',
+        serverConnectionId: 'https://books.test',
+        folderUri: '/d/b1',
+        manifestJson: JSON.stringify({ title: 'Offline Title', author: 'Offline Author', coverPath: '/d/b1/cover.jpg', tracks: [{ trackIndex: 0, path: '/d/b1/a.mp3', duration: 3600 }] }),
+        completedAt: 1
+      }
+    ]
+    renderPlayer()
+    expect(await screen.findByRole('heading', { name: 'Offline Title' })).toBeInTheDocument()
+    expect(screen.getByText('Offline Author')).toBeInTheDocument()
+    expect(document.querySelector('img')?.getAttribute('src')).toContain('/d/b1/cover.jpg')
+  })
 })
 
 describe('PlayerPage transport controls (native)', () => {

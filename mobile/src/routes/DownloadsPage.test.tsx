@@ -109,7 +109,7 @@ describe('DownloadsPage', () => {
     }
     renderApp(client)
 
-    const downloadButton = await screen.findByRole('button', { name: 'Download' })
+    const downloadButton = await screen.findByRole('button', { name: 'Download to device' })
     await user.click(downloadButton)
 
     expect(enqueueMock).toHaveBeenCalledTimes(1)
@@ -163,7 +163,7 @@ describe('DownloadsPage', () => {
     const startSession = vi.fn().mockResolvedValue(session())
     renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession })
 
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
 
     expect(enqueueMock).toHaveBeenCalledTimes(1)
     const options = startSession.mock.calls[0][1] as { supportedMimeTypes: string[]; forceDirectPlay: boolean }
@@ -179,7 +179,7 @@ describe('DownloadsPage', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession: vi.fn().mockResolvedValue(hls), closeSession })
 
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
 
     expect(enqueueMock).not.toHaveBeenCalled()
     expect(closeSession).toHaveBeenCalledWith('session-hls', expect.anything())
@@ -191,7 +191,7 @@ describe('DownloadsPage', () => {
     window.localStorage.setItem('shelfdroid.settings', JSON.stringify({ wifiOnly: true }))
     renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession: vi.fn().mockResolvedValue(session()), closeSession: vi.fn().mockResolvedValue(undefined) })
 
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
 
     expect(setWifiOnlyMock).toHaveBeenCalledWith({ wifiOnly: true })
     window.localStorage.removeItem('shelfdroid.settings')
@@ -202,15 +202,15 @@ describe('DownloadsPage', () => {
     const startSession = vi.fn().mockResolvedValue(session())
     renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession: vi.fn().mockResolvedValue(undefined) })
 
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
     expect(enqueueMock).toHaveBeenCalledTimes(1)
 
     act(() => emit('downloadProgress', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 0, totalBytes: 0, state: 'running' }))
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
     expect(enqueueMock).toHaveBeenCalledTimes(1) // still in flight: deduped
 
     act(() => emit('downloadProgress', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 0, totalBytes: 0, state: 'cancelled' }))
-    await user.click(await screen.findByRole('button', { name: 'Download' }))
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
     expect(enqueueMock).toHaveBeenCalledTimes(2)
   })
 
@@ -244,6 +244,42 @@ describe('DownloadsPage', () => {
     expect(removeMock).toHaveBeenCalledWith({ libraryItemId: 'book-1' })
     expect(await screen.findByText('Nothing downloaded yet.')).toBeInTheDocument()
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('shows the author and the locally stored cover for a downloaded book, and still lists an old manifest by title', async () => {
+    listLocalItemsMock.mockResolvedValue({
+      items: [
+        {
+          libraryItemId: 'book-1',
+          serverConnectionId: 'https://books.test',
+          folderUri: '/downloads/book-1',
+          manifestJson: JSON.stringify({ title: 'Project Hail Mary', author: 'Andy Weir', coverPath: '/data/downloads/book-1/cover.jpg', tracks: [{ trackIndex: 0, path: '/data/downloads/book-1/track-0.mp3' }] }),
+          completedAt: 1
+        },
+        { libraryItemId: 'book-2', serverConnectionId: 'https://books.test', folderUri: '/downloads/book-2', manifestJson: '{"title":"Old Download"}', completedAt: 1 }
+      ]
+    })
+    render(
+      <AuthContext.Provider
+        value={{ state: { status: 'authenticated', serverUrl: 'https://books.test' }, client: withClientDefaults({}), acquisitionClient: null, login: vi.fn(), logout: vi.fn() }}
+      >
+        <DownloadProvider>
+          <MemoryRouter initialEntries={['/downloads']}>
+            <Routes>
+              <Route path="/downloads" element={<DownloadsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </DownloadProvider>
+      </AuthContext.Provider>
+    )
+
+    const rows = await screen.findAllByTestId('download-local-row')
+    expect(rows).toHaveLength(2)
+    expect(within(rows[0]).getByText('Project Hail Mary')).toBeInTheDocument()
+    expect(within(rows[0]).getByText('Andy Weir')).toBeInTheDocument()
+    expect(within(rows[0]).getByTestId('download-local-cover').getAttribute('src')).toContain('/data/downloads/book-1/cover.jpg')
+    expect(within(rows[1]).getByText('Old Download')).toBeInTheDocument()
+    expect(within(rows[1]).queryByTestId('download-local-cover')).not.toBeInTheDocument()
   })
 
   it('keeps the book when the delete confirmation is dismissed', async () => {

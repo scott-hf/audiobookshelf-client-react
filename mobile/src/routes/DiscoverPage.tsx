@@ -10,12 +10,14 @@ import Btn from '../components/ui/Btn'
 import PageMessage from '../components/ui/PageMessage'
 import TextInput from '../components/ui/TextInput'
 import { useAcquisition } from '../contexts/AcquisitionContext'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
 
 /** Minimal shape this page needs -- lets tests inject a fake implementation via AuthContext
  * without mocking the module import (mirrors the web app's DiscoverApi contract). */
 export type DiscoverApi = Pick<MobileAcquisitionClient, 'searchAudiobooks' | 'createAcquisition'>
 
 export default function DiscoverPage() {
+  const t = useTypeSafeTranslations()
   const { libraryId } = useParams<{ libraryId: string }>()
   const navigate = useNavigate()
   const { acquisitionClient } = useAuth()
@@ -70,7 +72,11 @@ export default function DiscoverPage() {
 
   return (
     <div>
-      <h1 className="text-foreground mb-3 text-lg font-semibold">Discover</h1>
+      <h1 className="text-foreground mb-1 text-lg font-semibold">{t('LabelDiscover')}</h1>
+      {/* Always visible (not a toast): acquiring is server-side, offline listening needs a separate device download. */}
+      <p className="text-foreground-muted mb-3 text-sm leading-snug" data-testid="discover-explainer">
+        {t('MessageMobileDiscoverExplainer')}
+      </p>
 
       <form
         className="mb-4 flex items-end gap-2"
@@ -82,8 +88,8 @@ export default function DiscoverPage() {
         <TextInput
           type="search"
           size="small"
-          label="Search audiobooks"
-          placeholder="Search audiobooks"
+          label={t('LabelSearchAudiobooks')}
+          placeholder={t('LabelSearchAudiobooks')}
           value={query}
           onChange={setQuery}
           enterKeyHint="search"
@@ -92,7 +98,7 @@ export default function DiscoverPage() {
           onClear={() => setQuery('')}
         />
         <Btn size="small" type="submit" color="bg-accent" disabled={!query.trim() || searching} loading={searching} className="shrink-0 justify-center">
-          Search
+          {t('ButtonSearch')}
         </Btn>
       </form>
 
@@ -102,9 +108,11 @@ export default function DiscoverPage() {
         </p>
       )}
 
-      {searching && <LoadingView label="Searching…" />}
+      {searching && <LoadingView label={t('MessageMobileSearching')} />}
 
-      {!searching && searchResult && searchResult.results.length === 0 && <PageMessage message="No releases found." description="Try a different title or author." />}
+      {!searching && searchResult && searchResult.results.length === 0 && (
+        <PageMessage message={t('MessageMobileNoReleasesFound')} description={t('MessageMobileNoReleasesFoundDescription')} />
+      )}
 
       {!searching && searchResult && searchResult.results.length > 0 && (
         <div className="flex flex-col gap-2" data-testid="discover-results">
@@ -116,8 +124,9 @@ export default function DiscoverPage() {
 
       <ConfirmDialog
         isOpen={!!selected}
-        message={selected ? `Acquire "${selected.title}"?` : ''}
-        confirmLabel="Acquire"
+        message={selected ? t('MessageConfirmAcquisition', { 0: selected.title }) : ''}
+        description={t('MessageMobileConfirmAcquisitionSteps')}
+        confirmLabel={t('ButtonAcquire')}
         processing={submitting}
         onClose={() => setSelected(null)}
         onConfirm={() => void handleConfirmAcquisition()}

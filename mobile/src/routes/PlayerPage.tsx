@@ -5,6 +5,8 @@ import { mergeClasses } from '@/lib/merge-classes'
 import { useAuth } from '../auth/AuthProvider'
 import BookCover from '../components/BookCover'
 import type { PlayerStatus } from '../player/playerTypes'
+import { useDownloads } from '../downloads/DownloadProvider'
+import { localCoverSrc, parseLocalManifest } from '../player/offlineSource'
 import { usePlayer } from '../player/PlayerProvider'
 import type { TranslationKey } from '../types/translations'
 import type { AbsLibraryItem } from '../types/abs'
@@ -42,6 +44,7 @@ export default function PlayerPage() {
   const { client } = useAuth()
   const t = useTypeSafeTranslations()
   const { state, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
+  const { localItems } = useDownloads()
   const [item, setItem] = useState<AbsLibraryItem | null>(null)
   const [sleepTimerOn, setSleepTimerOn] = useState(false)
 
@@ -60,7 +63,8 @@ export default function PlayerPage() {
   }, [itemId])
 
   // Cover/title are presentation only -- the offline route (/downloads/:itemId/play) may have no
-  // reachable server, so a failed lookup silently degrades to the id-less fallback cover.
+  // reachable server, so a failed lookup silently degrades to the downloaded manifest's metadata
+  // (or the id-less fallback cover when the book is not downloaded).
   useEffect(() => {
     if (!itemId) return
     let cancelled = false
@@ -91,9 +95,12 @@ export default function PlayerPage() {
   const statusLabel = stalled && state.status === 'buffering' ? t('MessagePlayerStalled') : t(STATUS_LABEL_KEYS[state.status])
   const duration = state.duration || 0
   const progressPercent = duration > 0 ? (Math.min(state.currentTime, duration) / duration) * 100 : 0
-  const title = item?.media.metadata.title
-  const authorName = item?.media.metadata.authorName
-  const coverUrl = item ? client.authorizedStreamUrl(`/api/items/${encodeURIComponent(itemId)}/cover`) : null
+  // The live server item wins when reachable; otherwise a downloaded book falls back to the
+  // metadata and cover its manifest captured at download time.
+  const offline = parseLocalManifest(localItems.find((entry) => entry.libraryItemId === itemId))
+  const title = item?.media.metadata.title ?? offline?.title
+  const authorName = item?.media.metadata.authorName ?? offline?.author
+  const coverUrl = item ? client.authorizedStreamUrl(`/api/items/${encodeURIComponent(itemId)}/cover`) : localCoverSrc(offline?.coverPath)
 
   const toggleSleepTimer = () => {
     const next = !sleepTimerOn

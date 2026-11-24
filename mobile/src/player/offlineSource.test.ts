@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LocalLibraryItem } from '../downloads/downloadTypes'
-import { parseLocalManifest, selectPlaybackSource } from './offlineSource'
+import { localCoverSrc, parseLocalManifest, selectPlaybackSource } from './offlineSource'
 
 const item = { id: 'book-1' }
 
@@ -25,6 +25,7 @@ describe('parseLocalManifest', () => {
 
     expect(manifest).toEqual({
       complete: true,
+      title: 'Project Hail Mary',
       tracks: [
         { index: 0, contentUrl: 'file:///data/downloads/book-1/part1.mp3', duration: 0 },
         { index: 1, contentUrl: 'file:///data/downloads/book-1/part2.mp3', duration: 0 }
@@ -67,5 +68,63 @@ describe('selectPlaybackSource', () => {
 
   it('falls back to streaming when there is no local record at all', () => {
     expect(selectPlaybackSource(item, null)).toEqual({ kind: 'stream', itemId: 'book-1' })
+  })
+})
+
+describe('parseLocalManifest presentation metadata', () => {
+  it('still parses an old manifest (no metadata fields) as complete with zero durations and no metadata', () => {
+    const manifest = parseLocalManifest(localItem(JSON.stringify({ libraryItemId: 'book-1', tracks: [{ trackIndex: 0, filename: 'a.mp3', path: '/d/a.mp3', size: 5, sizeVerified: true }] })))
+    expect(manifest?.complete).toBe(true)
+    expect(manifest?.tracks).toEqual([{ index: 0, contentUrl: 'file:///d/a.mp3', duration: 0 }])
+    expect(manifest?.author).toBeUndefined()
+    expect(manifest?.coverPath).toBeUndefined()
+    expect(manifest?.chapters).toBeUndefined()
+    expect(manifest?.duration).toBeUndefined()
+  })
+
+  it('parses author, narrator, durations, cover and chapters', () => {
+    const manifest = parseLocalManifest(
+      localItem(
+        JSON.stringify({
+          title: 'Book',
+          author: 'Andy Weir',
+          narrator: 'Ray Porter',
+          duration: 300,
+          coverPath: '/d/cover.jpg',
+          chapters: [
+            { id: 1, start: 100, end: 300, title: 'Two' },
+            { id: 0, start: 0, end: 100, title: 'One' },
+            { nonsense: true }
+          ],
+          tracks: [
+            { trackIndex: 1, path: '/d/b.mp3', duration: 120.5 },
+            { trackIndex: 0, path: '/d/a.mp3', duration: 179.5 }
+          ]
+        })
+      )
+    )
+    expect(manifest).toMatchObject({ complete: true, title: 'Book', author: 'Andy Weir', narrator: 'Ray Porter', duration: 300, coverPath: '/d/cover.jpg' })
+    expect(manifest?.tracks.map((track) => track.duration)).toEqual([179.5, 120.5])
+    expect(manifest?.chapters).toEqual([
+      { id: 0, start: 0, end: 100, title: 'One' },
+      { id: 1, start: 100, end: 300, title: 'Two' }
+    ])
+  })
+
+  it('ignores malformed metadata values without affecting completeness', () => {
+    const manifest = parseLocalManifest(localItem(JSON.stringify({ author: 5, duration: -3, coverPath: '', chapters: 'x', tracks: [{ trackIndex: 0, path: '/d/a.mp3', duration: 'long' }] })))
+    expect(manifest?.complete).toBe(true)
+    expect(manifest?.author).toBeUndefined()
+    expect(manifest?.duration).toBeUndefined()
+    expect(manifest?.coverPath).toBeUndefined()
+    expect(manifest?.chapters).toBeUndefined()
+    expect(manifest?.tracks[0]?.duration).toBe(0)
+  })
+})
+
+describe('localCoverSrc', () => {
+  it('returns null without a cover path and a file URL otherwise', () => {
+    expect(localCoverSrc(undefined)).toBeNull()
+    expect(localCoverSrc('/d/cover.jpg')).toContain('/d/cover.jpg')
   })
 })

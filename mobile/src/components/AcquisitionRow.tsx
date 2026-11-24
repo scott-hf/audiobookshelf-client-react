@@ -1,19 +1,24 @@
 import type { Acquisition, AcquisitionState } from '@abs/acquisition-contract'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
+import type { TranslationKey } from '../types/translations'
 import Badge from './Badge'
 import Btn from './ui/Btn'
 
-const STATUS_LABELS: Record<AcquisitionState, string> = {
-  queued: 'Queued',
-  submitted: 'Submitted',
-  downloading: 'Downloading',
-  processing: 'Processing',
-  staged: 'Staged',
-  importing: 'Importing',
-  scanning: 'Scanning',
-  available: 'Available',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  needs_attention: 'Needs attention'
+/** All of these describe the SERVER's progress acquiring the book, not anything on this device. The
+ * `downloading` and `available` states deliberately avoid the bare words "Downloading"/"Available"
+ * (the generic StatusAcquisition* catalog values), which read as device downloads / offline availability. */
+const STATUS_LABEL_KEYS: Record<AcquisitionState, TranslationKey> = {
+  queued: 'StatusAcquisitionQueued',
+  submitted: 'StatusAcquisitionSubmitted',
+  downloading: 'LabelMobileAcquisitionFetching',
+  processing: 'StatusAcquisitionProcessing',
+  staged: 'StatusAcquisitionStaged',
+  importing: 'StatusAcquisitionImporting',
+  scanning: 'StatusAcquisitionScanning',
+  available: 'LabelMobileAcquisitionAvailable',
+  failed: 'StatusAcquisitionFailed',
+  cancelled: 'StatusAcquisitionCancelled',
+  needs_attention: 'StatusAcquisitionNeedsAttention'
 }
 
 const STATUS_TONES: Partial<Record<AcquisitionState, 'success' | 'error' | 'info' | 'warning'>> = {
@@ -44,8 +49,12 @@ interface AcquisitionRowProps {
 }
 
 export default function AcquisitionRow({ libraryId, acquisition, onRetry, onCancel, retrying = false, cancelling = false }: AcquisitionRowProps) {
+  const t = useTypeSafeTranslations()
   const progress = acquisition.progressPercent == null ? null : Math.min(100, Math.max(0, acquisition.progressPercent))
-  const canOpen = acquisition.state === 'available' && !!acquisition.absItemId
+  const isAvailable = acquisition.state === 'available'
+  // The server hands back the library item id once it has imported the book; without it there is no
+  // way to resolve the item, so the row falls back to wording only (no link is invented).
+  const canOpen = isAvailable && !!acquisition.absItemId
   const canRetry = acquisition.state === 'failed' && acquisition.error?.retryable === true
   const canCancel = CANCELLABLE_STATES.includes(acquisition.state)
   const isIndeterminate = progress == null && IN_PROGRESS_STATES.includes(acquisition.state)
@@ -56,11 +65,11 @@ export default function AcquisitionRow({ libraryId, acquisition, onRetry, onCanc
       <p className="text-foreground-subdued text-xs">{acquisition.author}</p>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge tone={STATUS_TONES[acquisition.state] ?? 'neutral'}>{STATUS_LABELS[acquisition.state]}</Badge>
+        <Badge tone={STATUS_TONES[acquisition.state] ?? 'neutral'}>{t(STATUS_LABEL_KEYS[acquisition.state])}</Badge>
         {progress != null && <span className="text-foreground-muted text-xs tabular-nums">{progress}%</span>}
         {isIndeterminate && (
           <span className="text-foreground-muted text-xs" data-testid="acquisition-progress-indeterminate">
-            Progress…
+            {t('LabelMobileProgressPending')}
           </span>
         )}
       </div>
@@ -71,9 +80,11 @@ export default function AcquisitionRow({ libraryId, acquisition, onRetry, onCanc
         </div>
       )}
 
-      {acquisition.error && (
-        <p className="text-error mt-2 text-xs">
-          Error: {acquisition.error.message}
+      {acquisition.error && <p className="text-error mt-2 text-xs">{t('MessageMobileAcquisitionError', { message: acquisition.error.message })}</p>}
+
+      {isAvailable && (
+        <p className="text-foreground-muted mt-2 text-xs leading-snug" data-testid="acquisition-next-step">
+          {canOpen ? t('MessageMobileAcquisitionAvailableNextStep') : t('MessageMobileAcquisitionAvailableNextStepNoLink')}
         </p>
       )}
 
@@ -81,17 +92,17 @@ export default function AcquisitionRow({ libraryId, acquisition, onRetry, onCanc
         <div className="mt-3 flex gap-2">
           {canOpen && (
             <Btn size="small" to={`/library/${libraryId}/item/${acquisition.absItemId}`} color="bg-accent" className="justify-center">
-              Open Book
+              {t('ButtonMobileOpenBookToDownload')}
             </Btn>
           )}
           {canRetry && (
             <Btn size="small" disabled={retrying} loading={retrying} onClick={() => onRetry(acquisition)} className="justify-center">
-              Retry
+              {t('ButtonRetry')}
             </Btn>
           )}
           {canCancel && (
             <Btn size="small" color="bg-error" disabled={cancelling} loading={cancelling} onClick={() => onCancel(acquisition)} className="justify-center">
-              Cancel
+              {t('ButtonCancel')}
             </Btn>
           )}
         </div>

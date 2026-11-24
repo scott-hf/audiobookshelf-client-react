@@ -144,6 +144,19 @@ class PlayerNotificationService : Service() {
         }
     }
 
+    /** Armed by `stop(keepForeground = true)` (an item replacement): if no `load()` follows within
+     * [FOREGROUND_HANDOVER_TIMEOUT_MS] the foreground status that was deliberately kept is released,
+     * so a failed replacement cannot leave an idle foreground notification up forever. */
+    private val foregroundReleaseHandler = Handler(Looper.getMainLooper())
+    @Suppress("DEPRECATION")
+    private val foregroundReleaseRunnable = Runnable {
+        if (currentSession == null) {
+            Log.d(tag, "No load() followed the item replacement, releasing the kept foreground")
+            stopForeground(true)
+            stopSelf()
+        }
+    }
+
     inner class LocalBinder : Binder() {
         fun getService(): PlayerNotificationService = this@PlayerNotificationService
     }
@@ -267,6 +280,9 @@ class PlayerNotificationService : Service() {
             return
         }
 
+        // The replacement this load completes (if any) has arrived: stop the handover countdown.
+        foregroundReleaseHandler.removeCallbacks(foregroundReleaseRunnable)
+
         this.currentSession = session
         this.accessToken = accessToken
         this.serverUrl = serverUrl
@@ -303,6 +319,13 @@ class PlayerNotificationService : Service() {
             }
             concatenating
         }
+
+        // Audio plays with the screen off, which lets the CPU (and Wi-Fi) doze: without a wake lock a
+        // backgrounded stream stutters or stops even though the foreground service is alive.
+        // ExoPlayer holds the lock only while actually playing. Network mode adds a Wi-Fi lock, which
+        // offline (file/content) playback does not need.
+        val allLocal = sortedTracks.all { track -> LOCAL_URI_SCHEMES.any { scheme -> !scheme.startsWith("http") && track.contentUrl.startsWith(scheme) } }
+        player.setWakeMode(if (allLocal) C.WAKE_MODE_LOCAL else C.WAKE_MODE_NETWORK)
 
         player.setMediaSource(mediaSource)
         player.seekTo((session.currentTime * 1000).toLong())
@@ -369,18 +392,77 @@ class PlayerNotificationService : Service() {
         if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem()
     }
 
+    /** Stops playback and clears the session.
+     *
+     * [keepForeground] = false (explicit close): also leaves the foreground, removes the notification
+     * and stops the service.
+     *
+     * [keepForeground] = true (the JS `play()` of ANOTHER item, which always tears the old one down
+     * first and then `load()`s): the service stays foreground and started. Dropping the foreground
+     * here and relying on [PlayerNotificationListener.onNotificationPosted] to re-enter it for the
+     * next item is only safe while the app is visible -- audio now keeps playing in the background,
+     * and on Android 12+ `startForeground()` from the background throws
+     * `ForegroundServiceStartNotAllowedException` unless an exemption applies. A countdown
+     * ([foregroundReleaseRunnable]) releases it if the follow-up `load()` never comes. */
     @Suppress("DEPRECATION")
-    fun stop() {
+    fun stop(keepForeground: Boolean = false) {
+        endPlayback()
+        stateEmitter?.onPlayerState(lastSnapshot)
+        stateStore.clear()
+        if (keepForeground) {
+            foregroundReleaseHandler.removeCallbacks(foregroundReleaseRunnable)
+            foregroundReleaseHandler.postDelayed(foregroundReleaseRunnable, FOREGROUND_HANDOVER_TIMEOUT_MS)
+        } else {
+            foregroundReleaseHandler.removeCallbacks(foregroundReleaseRunnable)
+            stopForeground(true)
+            stopSelf()
+        }
+    }
+
+    /** Silences the player and forgets the session; shared by [stop] and [onTaskRemoved]. Leaves the
+     * foreground state, the emitter and [stateStore] to the caller, which differ per path. */
+    private fun endPlayback() {
         stopTicker()
         sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
         sleepTimerManager.cancel()
         player.stop()
         currentSession = null
         lastSnapshot = PlayerSnapshot(PlayerStatus.IDLE, 0, 0, lastSnapshot.rate)
-        stateEmitter?.onPlayerState(lastSnapshot)
-        stateStore.clear()
+    }
+
+    /** The user swiped the app out of recents -- the product rule is that audio keeps playing when
+     * merely backgrounded but STOPS when the app is exited. Because this is a foreground service
+     * the process is not killed with the task, so without this the audio would play on with no UI.
+     *
+     * Order matters: the final position is captured BEFORE [endPlayback] resets the snapshot, and
+     * written AFTER it (with [PlaybackStateStore.saveDurably]) so nothing the stop triggers can clear
+     * or overwrite it. It is saved because the WebView dies with the task, so JS can never sync this
+     * position to the server; the next cold start recovers it from here. The recovery state is
+     * `shouldResume = false`: a restart shows the position, it does not auto-play. */
+    @Suppress("DEPRECATION")
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.d(tag, "onTaskRemoved: app exited, stopping playback")
+        val finalState = PlaybackRecovery.taskRemovedState(
+            lastSnapshot = lastSnapshot,
+            session = currentSession,
+            livePositionMs = if (::player.isInitialized) player.currentPosition else lastSnapshot.currentTimeMs,
+            serverUrl = serverUrl,
+            nowMs = System.currentTimeMillis()
+        )
+        foregroundReleaseHandler.removeCallbacks(foregroundReleaseRunnable)
+        if (::player.isInitialized) {
+            // Detached so a late listener event cannot run `persistRecoveryState` (whose IDLE branch
+            // clears the store) after the final write below.
+            if (::playerListener.isInitialized) player.removeListener(playerListener)
+            endPlayback()
+        }
+        finalState?.let { stateStore.saveDurably(it) }
+        // `setPlayer(null)` cancels the notification outright; `stopForeground(true)` alone could be
+        // undone by the notification manager re-posting it on the next player event.
+        if (::playerNotificationManager.isInitialized) playerNotificationManager.setPlayer(null)
         stopForeground(true)
         stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     fun getState(): PlayerSnapshot = lastSnapshot
@@ -451,23 +533,10 @@ class PlayerNotificationService : Service() {
      * individually, and self-correcting if one is missed. Never persists [accessToken]. */
     private fun persistRecoveryState(snapshot: PlayerSnapshot) {
         when (snapshot.status) {
-            PlayerStatus.PLAYING, PlayerStatus.BUFFERING, PlayerStatus.PAUSED -> {
-                val session = currentSession ?: return
-                stateStore.save(
-                    StoredPlaybackState(
-                        sessionId = session.id,
-                        libraryItemId = session.id,
-                        sessionJson = PlaybackStateStore.sessionToJson(session),
-                        positionMs = snapshot.currentTimeMs,
-                        rate = snapshot.rate,
-                        shouldResume = snapshot.status == PlayerStatus.PLAYING,
-                        serverUrlFingerprint = serverUrl,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-            }
             PlayerStatus.ENDED, PlayerStatus.ERROR, PlayerStatus.IDLE -> stateStore.clear()
-            else -> Unit
+            // Playing/buffering/paused with a session -> save; anything else (e.g. LOADING, or no
+            // session yet) leaves the store as it is. The decision lives in [PlaybackRecovery].
+            else -> PlaybackRecovery.liveState(snapshot, currentSession, serverUrl, System.currentTimeMillis())?.let { stateStore.save(it) }
         }
     }
 
@@ -494,6 +563,7 @@ class PlayerNotificationService : Service() {
     override fun onDestroy() {
         stopTicker()
         sleepCheckHandler.removeCallbacks(sleepCheckRunnable)
+        foregroundReleaseHandler.removeCallbacks(foregroundReleaseRunnable)
         if (::player.isInitialized) player.release()
         if (::mediaSession.isInitialized) mediaSession.release()
         super.onDestroy()

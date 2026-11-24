@@ -1,9 +1,12 @@
-import { useEffect } from 'react'
+import { useEffect, useId } from 'react'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
 import Btn from './ui/Btn'
 
 interface ConfirmDialogProps {
   isOpen: boolean
   message: string
+  /** Optional secondary line shown under `message` (smaller, muted). Line breaks (`\n`) are preserved. */
+  description?: string
   confirmLabel: string
   /** Tailwind background utility for the confirm button (e.g. `bg-error` for destructive actions). */
   confirmColor?: string
@@ -14,8 +17,22 @@ interface ConfirmDialogProps {
 
 /** Confirm modal for the mobile shell -- mirrors the web app's ConfirmDialog contract
  * (isOpen / message / confirm / cancel / processing) for the Discover confirm-exact-release
- * and cancel-acquisition flows, built from the ported ui/ primitives. */
-export default function ConfirmDialog({ isOpen, message, confirmLabel, confirmColor = 'bg-accent', processing = false, onClose, onConfirm }: ConfirmDialogProps) {
+ * and cancel-acquisition flows, built from the ported ui/ primitives. `description` is an
+ * optional extra line for context the user should read before committing. */
+export default function ConfirmDialog({
+  isOpen,
+  message,
+  description,
+  confirmLabel,
+  confirmColor = 'bg-accent',
+  processing = false,
+  onClose,
+  onConfirm
+}: ConfirmDialogProps) {
+  const t = useTypeSafeTranslations()
+  const messageId = useId()
+  const descriptionId = useId()
+
   useEffect(() => {
     if (!isOpen) return
     const onKeyDown = (event: KeyboardEvent) => {
@@ -33,12 +50,20 @@ export default function ConfirmDialog({ isOpen, message, confirmLabel, confirmCo
         className="bg-primary border-border shadow-modal-content w-full max-w-sm rounded-lg border p-5"
         role="alertdialog"
         aria-modal="true"
+        aria-describedby={description ? `${messageId} ${descriptionId}` : messageId}
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="text-foreground text-center text-base">{message}</p>
+        <p id={messageId} className="text-foreground text-center text-base">
+          {message}
+        </p>
+        {description && (
+          <p id={descriptionId} className="text-foreground-muted mt-3 text-sm leading-snug whitespace-pre-line" data-testid="confirm-dialog-description">
+            {description}
+          </p>
+        )}
         <div className="mt-5 flex gap-2">
           <Btn size="small" color="bg-black-300" disabled={processing} onClick={onClose} className="flex-1 justify-center">
-            Cancel
+            {t('ButtonCancel')}
           </Btn>
           <Btn size="small" color={confirmColor} disabled={processing} loading={processing} onClick={onConfirm} className="flex-1 justify-center">
             {confirmLabel}

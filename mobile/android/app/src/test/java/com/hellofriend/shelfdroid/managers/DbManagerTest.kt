@@ -93,6 +93,36 @@ class DbManagerTest {
         assertEquals(50L, reopened.parts.single().bytesDownloaded)
     }
 
+    @Test
+    fun presentationMetadataRoundTripsAndOlderRowsLoadWithDefaults() {
+        val part = DownloadItemPart(
+            id = "p1", downloadItemId = "b1", trackIndex = 0, filename = "track-0.mp3", serverPath = "/x",
+            finalDestinationPath = File(tempFolder.root, "track-0.mp3").absolutePath, duration = 61.5
+        )
+        val rich = download("b1", "complete").copy(
+            author = "Andy Weir", narrator = "Ray Porter", duration = 120.0, coverServerPath = "/api/items/b1/cover",
+            coverPath = "/data/cover.jpg", chaptersJson = "[{\"id\":0,\"start\":0,\"end\":60,\"title\":\"One\"}]", parts = mutableListOf(part)
+        )
+        val first = testDatabase()
+        first.saveDownload(rich)
+        first.saveDownload(download("old", "queued"))
+        first.close()
+
+        val reopened = testDatabase().downloads().associateBy { it.id }
+        val loaded = reopened.getValue("b1")
+        assertEquals("Andy Weir", loaded.author)
+        assertEquals("Ray Porter", loaded.narrator)
+        assertEquals(120.0, loaded.duration, 0.0)
+        assertEquals("/api/items/b1/cover", loaded.coverServerPath)
+        assertEquals("/data/cover.jpg", loaded.coverPath)
+        assertEquals(rich.chaptersJson, loaded.chaptersJson)
+        assertEquals(61.5, loaded.parts.single().duration, 0.0)
+        val plain = reopened.getValue("old")
+        assertEquals(null, plain.author)
+        assertEquals(null, plain.coverPath)
+        assertEquals(0.0, plain.duration, 0.0)
+    }
+
     // ---- FolderScanner: path confinement (security-relevant, per the dispatch's instructions) ----
 
     @Test

@@ -60,6 +60,59 @@ describe('native progress sync', () => {
     expect(api.syncSession).not.toHaveBeenCalled()
   })
 
+  it('flush reports the current position now and leaves the session and timer running', async () => {
+    const sync = createNativeProgressSync(api, 's1')
+    sync.observe(snapshot({ status: 'playing', currentTime: 0 }))
+    sync.observe(snapshot({ status: 'playing', currentTime: 9 }))
+    await sync.flush()
+
+    expect(api.syncSession).toHaveBeenCalledTimes(1)
+    expect(api.syncSession).toHaveBeenCalledWith('s1', expect.objectContaining({ currentTime: 9, timeListened: 9 }))
+    expect(api.closeSession).not.toHaveBeenCalled()
+
+    // Not double-counted by the next periodic sync, which keeps firing.
+    sync.observe(snapshot({ status: 'playing', currentTime: 20 }))
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(api.syncSession).toHaveBeenCalledTimes(2)
+    expect(api.syncSession).toHaveBeenLastCalledWith('s1', expect.objectContaining({ currentTime: 20, timeListened: 11 }))
+  })
+
+  it('flush does nothing when no time has been listened since the last report', async () => {
+    const sync = createNativeProgressSync(api, 's1')
+    await sync.flush()
+    sync.observe(snapshot({ status: 'playing', currentTime: 5 }))
+    await sync.flush()
+    ;(api.syncSession as ReturnType<typeof vi.fn>).mockClear()
+    await sync.flush()
+    expect(api.syncSession).not.toHaveBeenCalled()
+  })
+
+  it('flush never rejects when the server rejects', async () => {
+    ;(api.syncSession as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('server gone'))
+    const sync = createNativeProgressSync(api, 's1')
+    sync.observe(snapshot({ status: 'playing', currentTime: 12 }))
+    await expect(sync.flush()).resolves.toBeUndefined()
+    expect(api.syncSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failing periodic sync is swallowed instead of becoming an unhandled rejection', async () => {
+    ;(api.syncSession as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('server gone'))
+    const sync = createNativeProgressSync(api, 's1')
+    sync.observe(snapshot({ status: 'playing', currentTime: 0 }))
+    sync.observe(snapshot({ status: 'playing', currentTime: 15 }))
+    // An unhandled rejection would fail the vitest run; reaching the assertion means it was caught.
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(api.syncSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('flush after close does not report to the closed session', async () => {
+    const sync = createNativeProgressSync(api, 's1')
+    sync.observe(snapshot({ status: 'playing', currentTime: 12 }))
+    await sync.close()
+    await sync.flush()
+    expect(api.syncSession).not.toHaveBeenCalled()
+  })
+
   it('close reports final progress and stops the timer', async () => {
     const sync = createNativeProgressSync(api, 's1')
     sync.observe(snapshot({ status: 'playing', currentTime: 0 }))

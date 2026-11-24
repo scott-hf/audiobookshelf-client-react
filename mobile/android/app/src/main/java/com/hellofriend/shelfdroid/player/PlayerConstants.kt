@@ -39,3 +39,10 @@ const val MIN_BUFFER_MS = 30_000
 const val MAX_BUFFER_MS = 120_000
 const val BUFFER_FOR_PLAYBACK_MS = 1_500
 const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_000
+
+// How long the service stays in the foreground after `stop(keepForeground = true)` (an item
+// replacement) waiting for the follow-up `load()`. Longer than the JS loading watchdog (30 s) plus
+// session-start time, so a slow-but-healthy replacement never loses its foreground status; if the
+// load never arrives (session request failed, WebView died) the service releases it instead of
+// leaving an idle foreground notification up indefinitely.
+const val FOREGROUND_HANDOVER_TIMEOUT_MS = 60_000L

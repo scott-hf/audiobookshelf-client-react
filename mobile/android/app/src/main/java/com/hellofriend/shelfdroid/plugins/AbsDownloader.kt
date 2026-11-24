@@ -26,10 +26,11 @@ import java.io.File
  * DESIGN NOTE (flagged per the Task 3 dispatch's verification contract): the donor ports "every
  * audio track plus cover and ebook where present". Task 1's `AbsDownloaderEnqueueOptions` (already
  * committed, out of this dispatch's scope to revise) only carries `session: AbsPlaybackSession`,
- * whose `audioTracks` is the ONLY track/file info available here -- `AbsPlaybackSession` has no
- * `coverPath`/`ebookFile` field (see `mobile/src/types/abs.ts`). This dispatch therefore downloads
- * audio tracks only; cover/ebook support needs a Task 1 contract change (a follow-up, not
- * something Task 3 can retrofit without breaking the locked TS bridge).
+ * whose `audioTracks` is the ONLY track/file info available here. Cover support was added later
+ * as an additive, optional contract extension: `coverPath` (server-relative cover URL, fetched
+ * best-effort by `DownloadItemManager` once the audio is complete) and `metadata`
+ * (`author`/`narrator`/`duration`/`chapters`, copied into the manifest). Ebooks are still not
+ * downloaded.
  */
 @CapacitorPlugin(name = "AbsDownloader")
 class AbsDownloader : Plugin() {
@@ -92,16 +93,24 @@ class AbsDownloader : Plugin() {
                 filename = filename,
                 serverPath = contentUrl,
                 finalDestinationPath = File(itemFolder, filename).absolutePath,
-                stagingPath = File(stagingFolder, "$filename.part").absolutePath
+                stagingPath = File(stagingFolder, "$filename.part").absolutePath,
+                duration = track.optDouble("duration", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0
             )
         }.toMutableList()
 
+        // Optional, best-effort presentation metadata (older JS callers omit it entirely).
+        val metadata = call.data.optJSONObject("metadata")
         val downloadItem = DownloadItem(
             id = libraryItemId,
             libraryItemId = libraryItemId,
             title = title,
             serverConnectionId = serverConnectionId,
             serverUrl = serverUrl,
+            author = metadata?.optString("author", "")?.takeIf { it.isNotBlank() },
+            narrator = metadata?.optString("narrator", "")?.takeIf { it.isNotBlank() },
+            duration = metadata?.optDouble("duration", 0.0)?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+            coverServerPath = call.getString("coverPath")?.takeIf { it.isNotBlank() },
+            chaptersJson = metadata?.optJSONArray("chapters")?.takeIf { it.length() > 0 }?.toString(),
             parts = parts
         )
 

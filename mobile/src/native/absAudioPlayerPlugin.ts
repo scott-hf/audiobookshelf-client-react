@@ -23,7 +23,12 @@ export interface AbsAudioPlayerPlugin {
   pause(): Promise<void>
   seek(options: { seconds: number }): Promise<void>
   setRate(options: { rate: number }): Promise<void>
-  stop(): Promise<void>
+  /** Stops playback and clears the native session. By default it also leaves the foreground and
+   * stops the service (removing the notification). `keepForeground: true` is for "another `load()`
+   * follows" (an item replacement): the service stays foreground across the gap, because a
+   * foreground service that has been dropped cannot reliably re-enter the foreground from the
+   * background on Android 12+. Native releases it anyway if no `load()` arrives in time. */
+  stop(options?: { keepForeground?: boolean }): Promise<void>
   setSleepTimer(options: { seconds: number | null }): Promise<void>
   getState(): Promise<PlayerSnapshot>
   addListener(event: 'playerState', listener: (state: NativePlayerState) => void): Promise<PluginListenerHandle>

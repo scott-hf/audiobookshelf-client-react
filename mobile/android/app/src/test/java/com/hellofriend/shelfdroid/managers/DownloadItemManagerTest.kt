@@ -492,4 +492,106 @@ class DownloadItemManagerTest {
         assertTrue(repository.localItems.first().manifestJson.contains("\"sizeVerified\":false"))
         assertEquals(done.bytesDownloaded, done.totalBytes)
     }
+
+    // ---- Offline presentation metadata + cover ----
+
+    private fun richItem(p: DownloadItemPart) = item(p).apply {
+        author = "Andy Weir"
+        narrator = "Ray Porter"
+        duration = 3600.0
+        coverServerPath = "/api/items/lib-1/cover"
+        chaptersJson = "[{\"id\":0,\"start\":0,\"end\":1800,\"title\":\"One\"}]"
+    }
+
+    @Test
+    fun finishedBookStoresCoverAndRecordsMetadataInTheManifest() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "image/png").setBody("PNGDATA"))
+        val p = part("p1", contentLength = 5L).copy(duration = 3600.0)
+
+        val manager = manager()
+        manager.enqueue(richItem(p))
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        server.takeRequest()
+        val coverRequest = server.takeRequest()
+        assertEquals("/api/items/lib-1/cover", coverRequest.path)
+        assertEquals("Bearer token-1", coverRequest.getHeader("Authorization"))
+
+        val cover = File(File(p.finalDestinationPath).parentFile, "cover.png")
+        assertTrue(cover.isFile)
+        val manifest = org.json.JSONObject(repository.localItems.single().manifestJson)
+        assertEquals("Andy Weir", manifest.getString("author"))
+        assertEquals("Ray Porter", manifest.getString("narrator"))
+        assertEquals(3600.0, manifest.getDouble("duration"), 0.0)
+        assertEquals(cover.absolutePath, manifest.getString("coverPath"))
+        assertEquals("One", manifest.getJSONArray("chapters").getJSONObject(0).getString("title"))
+        assertEquals(3600.0, manifest.getJSONArray("tracks").getJSONObject(0).getDouble("duration"), 0.0)
+    }
+
+    @Test
+    fun failedCoverDownloadDoesNotFailOrDelayTheBook() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        server.enqueue(MockResponse().setResponseCode(404))
+        val p = part("p1", contentLength = 5L)
+
+        val manager = manager()
+        manager.enqueue(richItem(p))
+        manager.awaitIdle()
+
+        val done = manager.item("item-1")!!
+        assertEquals("complete", done.state)
+        assertEquals(null, done.error)
+        assertTrue(File(p.finalDestinationPath).isFile)
+        val manifest = org.json.JSONObject(repository.localItems.single().manifestJson)
+        assertFalse(manifest.has("coverPath"))
+        assertEquals("Andy Weir", manifest.getString("author"))
+    }
+
+    @Test
+    fun nonImageCoverResponseIsIgnored() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/html").setBody("<html>login</html>"))
+        val p = part("p1", contentLength = 5L)
+
+        val manager = manager()
+        manager.enqueue(richItem(p))
+        manager.awaitIdle()
+
+        assertEquals("complete", manager.item("item-1")?.state)
+        assertEquals(0, File(p.finalDestinationPath).parentFile!!.listFiles { f -> f.name.startsWith("cover") }!!.size)
+    }
+
+    @Test
+    fun itemWithoutMetadataWritesTheOldManifestShapeAndMakesNoCoverRequest() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        val manager = manager()
+        manager.enqueue(item(part("p1", contentLength = 5L)))
+        manager.awaitIdle()
+
+        assertEquals(1, server.requestCount)
+        val manifest = org.json.JSONObject(repository.localItems.single().manifestJson)
+        listOf("author", "narrator", "duration", "coverPath", "chapters").forEach { assertFalse(it, manifest.has(it)) }
+        assertEquals("lib-1", manifest.getString("libraryItemId"))
+        assertEquals(1, manifest.getJSONArray("tracks").length())
+    }
+
+    @Test
+    fun removingADownloadedBookDeletesItsCoverToo() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("hello"))
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "image/jpeg").setBody("JPG"))
+        val p = part("p1", contentLength = 5L)
+        val manager = manager()
+        manager.enqueue(richItem(p))
+        manager.awaitIdle()
+        val cover = File(File(p.finalDestinationPath).parentFile, "cover.jpg")
+        assertTrue(cover.isFile)
+
+        manager.removeDownloaded("lib-1")
+
+        assertFalse(cover.exists())
+        assertFalse(File(p.finalDestinationPath).exists())
+        assertTrue(repository.localItems.isEmpty())
+    }
 }

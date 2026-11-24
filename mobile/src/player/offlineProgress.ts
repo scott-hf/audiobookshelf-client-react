@@ -182,6 +182,8 @@ export interface OfflineProgressSyncOptions {
  *   while playing; a status change is written at once so a pause/end is never lost to the throttle),
  *   accumulates `unsyncedTimeListened` ONLY when there is no `wrapped` server sync (with one, the
  *   server is being told), then delegates to `wrapped`.
+ * - `flush`: writes the local record now (ignoring the throttle) and flushes `wrapped`, without
+ *   closing anything -- used when the app is backgrounded but audio keeps playing. NEVER rejects.
  * - `close`: flushes the local record first, then closes `wrapped`. NEVER rejects --
  *   `PlayerProvider.teardownNative` relies on that (see its contract comment).
  *
@@ -237,6 +239,24 @@ export function createOfflineProgressSync(libraryItemId: string, wrapped: Native
         }
       }
       wrapped?.observe(snapshot)
+    },
+
+    async flush(): Promise<void> {
+      // Bypasses the write throttle on purpose: the app is leaving the foreground, so the
+      // throttled 5 s cadence may not get another chance to run before Android freezes the WebView.
+      // Unlike close() it leaves the record open -- playback continues and `observe` keeps writing.
+      if (!closed) {
+        try {
+          persist(now())
+        } catch {
+          // Local bookkeeping is best-effort and must never block the server flush below.
+        }
+      }
+      try {
+        await wrapped?.flush()
+      } catch {
+        // Same contract as close(): the server may be unreachable, and callers never see a rejection.
+      }
     },
 
     async close(): Promise<void> {

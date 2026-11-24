@@ -36,6 +36,12 @@ data class StoredPlaybackState(
 interface PlaybackStorage {
     fun read(): String?
     fun write(value: String)
+
+    /** Like [write] but guaranteed to be on disk when it returns. For the one write that must
+     * survive the process being killed immediately afterwards (see
+     * [PlaybackStateStore.saveDurably]). Defaults to [write] for in-memory test doubles. */
+    fun writeDurably(value: String) = write(value)
+
     fun clear()
 }
 
@@ -46,6 +52,11 @@ class SharedPrefsPlaybackStorage(context: Context) : PlaybackStorage {
 
     override fun write(value: String) {
         preferences.edit().putString(KEY_STATE, value).apply()
+    }
+
+    // `commit()` blocks until the write reaches disk, unlike `apply()`'s fire-and-forget queue.
+    override fun writeDurably(value: String) {
+        preferences.edit().putString(KEY_STATE, value).commit()
     }
 
     override fun clear() {
@@ -62,7 +73,14 @@ class SharedPrefsPlaybackStorage(context: Context) : PlaybackStorage {
 class PlaybackStateStore(private val storage: PlaybackStorage) {
     constructor(context: Context) : this(SharedPrefsPlaybackStorage(context))
 
-    fun save(state: StoredPlaybackState) {
+    fun save(state: StoredPlaybackState) = storage.write(encode(state))
+
+    /** [save], but flushed to disk before returning. Used for the final write on task removal
+     * (`PlayerNotificationService.onTaskRemoved`), where the process may be killed right after and
+     * an `apply()`-style async write could be lost -- along with the only record of the position. */
+    fun saveDurably(state: StoredPlaybackState) = storage.writeDurably(encode(state))
+
+    private fun encode(state: StoredPlaybackState): String {
         val obj = JSONObject()
         obj.put("sessionId", state.sessionId)
         obj.put("libraryItemId", state.libraryItemId)
@@ -72,7 +90,7 @@ class PlaybackStateStore(private val storage: PlaybackStorage) {
         obj.put("shouldResume", state.shouldResume)
         obj.put("serverUrlFingerprint", state.serverUrlFingerprint)
         obj.put("updatedAt", state.updatedAt)
-        storage.write(obj.toString())
+        return obj.toString()
     }
 
     fun load(): StoredPlaybackState? {

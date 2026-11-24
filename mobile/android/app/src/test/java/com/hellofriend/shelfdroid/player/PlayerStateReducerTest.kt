@@ -37,6 +37,25 @@ class PlayerStateReducerTest {
     }
 
     @Test
+    fun onlyTerminalEventsDropTheForegroundSoBackgroundedPlaybackKeepsIt() {
+        // Audio now keeps playing while the app is backgrounded, so the foreground service is what
+        // keeps the process alive. Nothing during normal playback may release it -- not buffering
+        // (a network stall), not a pause (the user may resume from the notification), not a tick.
+        // Only the end of the book or an unrecoverable error does.
+        val reducer = PlayerStateReducer()
+        val keepsForeground = listOf(
+            PlayerEvent.Playing(positionMs = 1_000, durationMs = 10_000, rate = 1f),
+            PlayerEvent.Buffering(positionMs = 1_000, durationMs = 10_000, rate = 1f, playWhenReady = true),
+            PlayerEvent.Buffering(positionMs = 1_000, durationMs = 10_000, rate = 1f, playWhenReady = false),
+            PlayerEvent.Paused(positionMs = 1_000, durationMs = 10_000, rate = 1f)
+        )
+        keepsForeground.forEach { event -> assertFalse("$event", reducer.reduce(event).stopForeground) }
+
+        assertTrue(reducer.reduce(PlayerEvent.Ended(positionMs = 10_000)).stopForeground)
+        assertTrue(reducer.reduce(PlayerEvent.Error("boom")).stopForeground)
+    }
+
+    @Test
     fun positionClampsIntoZeroToDurationRange() {
         val reducer = PlayerStateReducer()
         val over = reducer.reduce(PlayerEvent.Playing(positionMs = 999_999, durationMs = 10_000, rate = 1f))

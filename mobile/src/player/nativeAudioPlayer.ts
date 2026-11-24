@@ -18,7 +18,8 @@ export interface NativeAudioPlayer {
   pause(): Promise<void>
   seek(seconds: number): Promise<void>
   setRate(rate: number): Promise<void>
-  stop(): Promise<void>
+  /** See `AbsAudioPlayerPlugin.stop`: `keepForeground` marks a stop that an item replacement follows. */
+  stop(options?: { keepForeground?: boolean }): Promise<void>
   setSleepTimer(seconds: number | null): Promise<void>
 }
 
@@ -73,8 +74,9 @@ export function createNativeAudioPlayer(plugin: AbsAudioPlayerPlugin): NativeAud
     async setRate(rate) {
       await plugin.setRate({ rate })
     },
-    async stop() {
-      await plugin.stop()
+    async stop(options) {
+      // Only forward the option when set, so the plain stop() call stays argument-free.
+      await (options ? plugin.stop(options) : plugin.stop())
       setState({ status: 'idle', itemId: null, playWhenReady: false })
     },
     async setSleepTimer(seconds) {

@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /** Raw catalog persistence [DownloadItemManager] needs -- `DbManagerDownloadRepository` wraps
  * Task 2's `DbManager`; a fake implementation backs unit tests without touching the filesystem
@@ -94,7 +95,7 @@ private val ALWAYS_AVAILABLE = DiskSpacePolicy { true }
  */
 class DownloadItemManager(
     private val repository: DownloadRepository,
-    httpClient: OkHttpClient = OkHttpClient(),
+    private val httpClient: OkHttpClient = OkHttpClient(),
     private val tokenProvider: (itemId: String) -> String?,
     private val refreshToken: (itemId: String) -> String? = tokenProvider,
     private val connectivity: ConnectivityPolicy = ALWAYS_ALLOWED,
@@ -249,11 +250,13 @@ class DownloadItemManager(
             repository.remove(id)
             return
         }
+        jobs.remove(finishJobKey(id))?.cancel()
         item.parts.forEach { part ->
             activeCalls.remove(part.id)?.cancel()
             jobs.remove(part.id)?.cancel()
             File(part.stagingPath).delete()
         }
+        deleteCoverFiles(item)
         repository.remove(id)
         item.state = "cancelled"
         listener.onItemUpdated(item)
@@ -277,6 +280,7 @@ class DownloadItemManager(
                 File(part.finalDestinationPath).delete()
                 File(part.stagingPath).delete()
             }
+            deleteCoverFiles(item)
         }
         repository.removeLocalItem(libraryItemId)
     }
@@ -306,7 +310,7 @@ class DownloadItemManager(
         if (item.parts.isNotEmpty() && item.parts.all { it.completed }) {
             // An item already registered as complete (restored alongside its local row) needs no
             // second finish -- that would rewrite the local row and re-fire onItemComplete.
-            if (item.state != "complete") finishItem(item)
+            if (item.state != "complete") finalizeItem(item)
             return
         }
         item.parts.filter { !it.completed && it.state != "paused" && it.state != "failed" }.forEach { part ->
@@ -443,7 +447,7 @@ class DownloadItemManager(
         refreshAggregates(item)
         persist(item, force = true)
         listener.onItemUpdated(item)
-        if (item.parts.all { it.completed }) finishItem(item) else startNextParts(item)
+        if (item.parts.all { it.completed }) finalizeItem(item) else startNextParts(item)
     }
 
     private fun failPart(item: DownloadItem, part: DownloadItemPart, message: String) {
@@ -467,6 +471,86 @@ class DownloadItemManager(
         listener.onItemUpdated(item)
         notifyQueueChanged()
     }
+
+    /** Every audio part is complete: fetch the cover (best-effort, off the caller's thread) and
+     * then register the book. A missing or failed cover never prevents the registration -- the
+     * audio is already safely on disk. */
+    private fun finalizeItem(item: DownloadItem) {
+        val needsCover = !item.coverServerPath.isNullOrBlank() && item.coverPath?.let { File(it).isFile } != true
+        if (!needsCover) {
+            finishItem(item)
+            return
+        }
+        val key = finishJobKey(item.id)
+        if (jobs.containsKey(key)) return
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val self = currentCoroutineContext()[Job]
+            try {
+                fetchCover(item)
+                if (cancelledIds.contains(item.id)) deleteCoverFiles(item) else finishItem(item)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.log(Level.WARNING, "Finishing ${item.id} failed after the cover step", e)
+            } finally {
+                if (self != null) jobs.remove(key, self) else jobs.remove(key)
+            }
+        }
+        jobs[key] = job
+        job.start()
+    }
+
+    /** Downloads the cover next to the audio files. Entirely best-effort: any failure (no token,
+     * HTTP error, non-image response, I/O error) leaves [DownloadItem.coverPath] null and is only
+     * logged. */
+    private suspend fun fetchCover(item: DownloadItem) = withContext(Dispatchers.IO) {
+        val serverPath = item.coverServerPath?.takeIf { it.isNotBlank() } ?: return@withContext
+        val folder = item.parts.firstOrNull()?.let { File(it.finalDestinationPath).parentFile } ?: return@withContext
+        var staging: File? = null
+        try {
+            val token = tokenProvider(item.id)
+            if (token.isNullOrBlank()) return@withContext
+            val request = Request.Builder().url(resolveUrl(item.serverUrl, serverPath)).addHeader("Authorization", "Bearer $token").build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext
+                val contentType = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+                if (!contentType.startsWith("image/")) return@withContext
+                val body = response.body ?: return@withContext
+                folder.mkdirs()
+                val target = File(folder, "$COVER_BASENAME.${coverExtension(contentType)}")
+                val tmp = File(folder, "${target.name}.part").also { staging = it }
+                tmp.outputStream().use { out -> body.byteStream().copyTo(out) }
+                if (tmp.length() <= 0L) {
+                    tmp.delete()
+                    return@withContext
+                }
+                if (target.exists()) target.delete()
+                if (tmp.renameTo(target)) item.coverPath = target.absolutePath else tmp.delete()
+            }
+        } catch (e: CancellationException) {
+            staging?.delete()
+            throw e
+        } catch (e: Exception) {
+            staging?.delete()
+            LOG.log(Level.WARNING, "Cover download for ${item.id} failed; continuing without a local cover", e)
+        }
+    }
+
+    private fun coverExtension(contentType: String): String = when (contentType) {
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        else -> "jpg"
+    }
+
+    private fun deleteCoverFiles(item: DownloadItem) {
+        item.coverPath?.let { File(it).delete() }
+        val folder = item.parts.firstOrNull()?.let { File(it.finalDestinationPath).parentFile }
+        folder?.listFiles { f -> f.isFile && f.name.startsWith("$COVER_BASENAME.") }?.forEach { it.delete() }
+        item.coverPath = null
+    }
+
+    private fun finishJobKey(itemId: String) = "$itemId#finish"
 
     private fun finishItem(item: DownloadItem) {
         item.state = "complete"
@@ -519,17 +603,27 @@ class DownloadItemManager(
             tracks.put(
                 org.json.JSONObject()
                     .put("trackIndex", part.trackIndex)
+                    .put("duration", part.duration)
                     .put("filename", part.filename)
                     .put("path", part.finalDestinationPath)
                     .put("size", File(part.finalDestinationPath).takeIf { it.isFile }?.length() ?: part.bytesDownloaded)
                     .put("sizeVerified", part.contentLength > 0L)
             )
         }
-        return org.json.JSONObject()
+        val manifest = org.json.JSONObject()
             .put("libraryItemId", item.libraryItemId)
             .put("title", item.title)
             .put("tracks", tracks)
-            .toString()
+        // Additive presentation metadata: absent for older manifests and omitted when unknown.
+        item.author?.takeIf { it.isNotBlank() }?.let { manifest.put("author", it) }
+        item.narrator?.takeIf { it.isNotBlank() }?.let { manifest.put("narrator", it) }
+        val totalDuration = item.duration.takeIf { it > 0.0 } ?: item.parts.sumOf { it.duration }
+        if (totalDuration > 0.0) manifest.put("duration", totalDuration)
+        item.coverPath?.takeIf { File(it).isFile }?.let { manifest.put("coverPath", it) }
+        item.chaptersJson?.let { raw ->
+            runCatching { org.json.JSONArray(raw) }.getOrNull()?.takeIf { it.length() > 0 }?.let { manifest.put("chapters", it) }
+        }
+        return manifest.toString()
     }
 
     private fun persist(item: DownloadItem, force: Boolean = false) {
@@ -552,6 +646,7 @@ class DownloadItemManager(
 
     companion object {
         const val MAX_CONCURRENT_PARTS = 3
+        const val COVER_BASENAME = "cover"
         private const val PERSIST_INTERVAL_MS = 500L
         private const val PROGRESS_EMIT_INTERVAL_MS = 750L
         private val LOG: Logger = Logger.getLogger("DownloadItemManager")

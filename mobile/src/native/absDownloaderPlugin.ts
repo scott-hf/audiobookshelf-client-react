@@ -1,5 +1,5 @@
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
-import type { AbsPlaybackSession } from '../types/abs'
+import type { AbsChapter, AbsPlaybackSession } from '../types/abs'
 import type { RawDownloadEvent } from '../downloads/downloadTypes'
 
 /** Options passed to the native plugin's `enqueue` call: the resolved ABS playback session
@@ -16,6 +16,17 @@ export interface AbsDownloaderEnqueueOptions {
   /** Wi-Fi-only preference for this transfer (`AbsDownloader.kt` `enqueue`). Optional: omitted, the
    * native side keeps the policy last set by `setWifiOnly`. */
   wifiOnly?: boolean
+  /** Server-relative cover URL (`/api/items/{id}/cover`). The native side downloads it next to the
+   * audio once the audio is complete; a failure never fails the book. Optional/additive. */
+  coverPath?: string
+  /** Best-effort presentation metadata stored in the offline manifest. Optional/additive. */
+  metadata?: {
+    author?: string
+    narrator?: string
+    /** Total duration, seconds. */
+    duration?: number
+    chapters?: AbsChapter[]
+  }
 }
 
 /**

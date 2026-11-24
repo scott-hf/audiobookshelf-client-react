@@ -1,4 +1,5 @@
 import type { SearchRelease } from '@abs/acquisition-contract'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
 import Badge from './Badge'
 import Btn from './ui/Btn'
 
@@ -29,6 +30,7 @@ interface ReleaseCardProps {
 }
 
 export default function ReleaseCard({ release, onAcquire, submitting = false }: ReleaseCardProps) {
+  const t = useTypeSafeTranslations()
   const canAcquire = release.requestable && !release.alreadyOwned
   const narrators = release.narrators.join(', ')
 
@@ -46,8 +48,8 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
         {release.durationSeconds != null && <Badge>{durationPretty(release.durationSeconds)}</Badge>}
         <Badge>{release.sourceLabel}</Badge>
         <Badge>{release.qualityLabel}</Badge>
-        {release.seeders != null && <Badge>{release.seeders} seeders</Badge>}
-        {release.alreadyOwned && <Badge tone="success">Already owned</Badge>}
+        {release.seeders != null && <Badge>{t('LabelSeeders', { 0: release.seeders })}</Badge>}
+        {release.alreadyOwned && <Badge tone="success">{t('LabelMobileAlreadyInServerLibrary')}</Badge>}
       </div>
 
       <Btn
@@ -58,7 +60,7 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
         onClick={() => onAcquire(release)}
         className="mt-3 w-full justify-center"
       >
-        Acquire
+        {t('ButtonAcquire')}
       </Btn>
     </div>
   )

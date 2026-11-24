@@ -36,6 +36,25 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+/** Folds a native snapshot into React state. Shared by the live `playerState` events and the
+ * foreground resync (`getState()`), so both land in exactly the same shape.
+ *
+ * Keeps the seeded offline resume position visible through the pre-roll. `load()` emits a
+ * `loading`/`buffering` snapshot with `currentTime: 0` before ExoPlayer has seeked to the session's
+ * start position, which would otherwise flash the restored position back to 0:00 right after play()
+ * seeded it (see the offline start-time resolution in play()). Transient by construction: the first
+ * snapshot carrying a real position wins, because a seeked player reports its actual position. */
+function toPlayerState(previous: PlayerState, snapshot: PlayerSnapshot, itemId: string | null): PlayerState {
+  return {
+    status: snapshot.status,
+    itemId,
+    currentTime: snapshot.currentTime === 0 && previous.currentTime > 0 && (snapshot.status === 'loading' || snapshot.status === 'buffering') ? previous.currentTime : snapshot.currentTime,
+    duration: snapshot.duration,
+    error: snapshot.error,
+    playWhenReady: snapshot.playWhenReady
+  }
+}
+
 export interface PlayerContextValue {
   state: PlayerState
   /** True once the player has been buffering with intent to play for STALL_THRESHOLD_MS. */
@@ -128,20 +147,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nativePlayer) return
     return nativePlayer.subscribe((snapshot: PlayerSnapshot) => {
-      setState((previous) => ({
-        status: snapshot.status,
-        itemId: itemIdRef.current,
-        // Keep the seeded offline resume position visible through the pre-roll. `load()` emits a
-        // `loading`/`buffering` snapshot with `currentTime: 0` before ExoPlayer has seeked to the
-        // session's start position, which would otherwise flash the restored position back to
-        // 0:00 right after play() seeded it (see the offline start-time resolution below).
-        // Transient by construction: the first snapshot carrying a real position wins, because a
-        // seeked player reports its actual position rather than 0.
-        currentTime: snapshot.currentTime === 0 && previous.currentTime > 0 && (snapshot.status === 'loading' || snapshot.status === 'buffering') ? previous.currentTime : snapshot.currentTime,
-        duration: snapshot.duration,
-        error: snapshot.error,
-        playWhenReady: snapshot.playWhenReady
-      }))
+      setState((previous) => toPlayerState(previous, snapshot, itemIdRef.current))
       setRateState(snapshot.rate)
       progressSyncRef.current?.observe(snapshot)
     })
@@ -173,17 +179,59 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer)
   }, [nativePlayer, loading, t])
 
+  // Backgrounding (home button, screen lock, app switcher) must NOT stop playback; only exiting the
+  // app does, and that is native's job (`PlayerNotificationService.onTaskRemoved`) because by then
+  // the WebView is gone. This reverses the original vertical-slice rule of closing on background
+  // (docs/implementation-status.md, Task 4): audiobooks are listened to with the screen off, and the
+  // native service is already a `mediaPlayback` foreground service that keeps playing regardless.
+  //
+  // What backgrounding DOES break is JS: Android throttles or suspends a backgrounded WebView's
+  // timers, so the 15 s progress-sync interval cannot be relied on, and position ticks (2 per
+  // second from native) are missed while it is frozen.
+  //   - leaving the foreground: flush progress right now, while the WebView is still alive;
+  //   - returning: re-read native state, because the UI missed an unknown number of ticks (and
+  //     possibly a pause/end that happened while away), and let the sync timer pick back up.
+  // Native path only: the web/dev-preview <audio> keeps playing in a hidden tab on its own.
   useEffect(() => {
-    // Close (not just pause) on app background per the vertical-slice spec -- the sync
-    // timer cannot run while backgrounded, so we report final progress immediately instead.
+    if (!nativePlayer) return
+    let cancelled = false
+
+    const resyncFromNative = async (): Promise<void> => {
+      // Same direct plugin round trip as the recovery effect below (not `nativePlayer.getState()`,
+      // which only echoes the last `playerState` event this possibly-frozen WebView managed to see).
+      const generation = playGenerationRef.current
+      let snapshot: PlayerSnapshot
+      try {
+        snapshot = await AbsAudioPlayerNative.getState()
+      } catch {
+        return // Service not bound (yet) -- the next live snapshot will catch the UI up.
+      }
+      const itemId = itemIdRef.current
+      if (cancelled || generation !== playGenerationRef.current) return // a play()/close() overtook us
+      // Nothing is loaded on the JS side, or a load is still in flight (its own snapshots own the
+      // state), or native has nothing: do not overwrite the UI with a stale/empty picture. The
+      // snapshot's own `itemId` is the native *session* id, so the JS `itemIdRef` is used instead.
+      if (!itemId || stateRef.current.status === 'loading' || snapshot.status === 'idle') return
+      setState((previous) => toPlayerState(previous, snapshot, itemId))
+      setRateState(snapshot.rate)
+      // Feeds the sync's last-known position (stale after a frozen stretch) and restarts/stops its
+      // timer to match what native actually did while away (e.g. a sleep-timer pause).
+      progressSyncRef.current?.observe(snapshot)
+    }
+
     const listenerHandle = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-      if (!isActive) void close()
+      if (isActive) {
+        void resyncFromNative()
+      } else {
+        // flush() never rejects by contract; the catch is belt-and-braces for a future sync impl.
+        void progressSyncRef.current?.flush().catch(() => undefined)
+      }
     })
     return () => {
+      cancelled = true
       void listenerHandle.then((handle) => handle.remove())
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [nativePlayer])
 
   // WI-1496 t700 Task 4: pick up a session PlayerNotificationService restored from
   // PlaybackStateStore (process death / service recreation) instead of assuming idle on cold
@@ -226,13 +274,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
    * Never rejects and never waits unboundedly on the server: a failed `stop()` is moot because the
    * next `load()` (or the user's close) surfaces any real problem, and the ABS session close is
    * fire-and-forget (`waitForClose: false`, used when replacing an item so a slow/dead server
-   * cannot block the new load) or time-boxed (`waitForClose: true`, used by an explicit close()). */
-  async function teardownNative({ waitForClose }: { waitForClose: boolean }): Promise<void> {
+   * cannot block the new load) or time-boxed (`waitForClose: true`, used by an explicit close()).
+   *
+   * `keepForeground` is set only when replacing an item (`play()`): another `load()` follows, and
+   * native must not drop its foreground service in between. Now that audio keeps playing in the
+   * background, that gap can happen while backgrounded (Android Auto / voice picking another book),
+   * where a service that left the foreground may not be allowed back in on Android 12+. An explicit
+   * close() leaves it false: the user is looking at the app, and the notification should go. */
+  async function teardownNative({ waitForClose, keepForeground = false }: { waitForClose: boolean; keepForeground?: boolean }): Promise<void> {
     if (!nativePlayer) return
     const sync = progressSyncRef.current
     progressSyncRef.current = null
     try {
-      await nativePlayer.stop()
+      await nativePlayer.stop(keepForeground ? { keepForeground } : undefined)
     } catch {
       // Service not bound / already stopped -- nothing to release.
     }
@@ -318,7 +372,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       try {
         // Inside the try so a failure here lands in the error state (with a retry path) rather
         // than escaping with the UI stuck on whatever state preceded it.
-        await teardownNative({ waitForClose: false })
+        await teardownNative({ waitForClose: false, keepForeground: true })
         if (generation !== playGenerationRef.current) return
 
         // Read AFTER teardownNative: closing the previous playback flushes its local record, and

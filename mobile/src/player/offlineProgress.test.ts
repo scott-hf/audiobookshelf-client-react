@@ -287,6 +287,7 @@ describe('createOfflineProgressSync', () => {
     const calls: string[] = []
     const wrapped: NativeProgressSync = {
       observe: vi.fn(() => void calls.push('observe')),
+      flush: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(async () => void calls.push('close'))
     }
     const { sync, storage, advance } = setup(wrapped)
@@ -307,6 +308,7 @@ describe('createOfflineProgressSync', () => {
     let storageRef: OfflineProgressStorage | null = null
     const wrapped: NativeProgressSync = {
       observe: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(async () => {
         recordWhenWrappedClosed = storageRef?.read('b1') ?? null
       })
@@ -322,13 +324,66 @@ describe('createOfflineProgressSync', () => {
   })
 
   it('close() never rejects when the wrapped sync rejects, and still flushes locally', async () => {
-    const wrapped: NativeProgressSync = { observe: vi.fn(), close: vi.fn().mockRejectedValue(new Error('server gone')) }
+    const wrapped: NativeProgressSync = { observe: vi.fn(), flush: vi.fn(), close: vi.fn().mockRejectedValue(new Error('server gone')) }
     const { sync, storage } = setup(wrapped)
     sync.observe(snapshot({ currentTime: 42 }))
 
     await expect(sync.close()).resolves.toBeUndefined()
     expect(storage.read('b1')?.currentTime).toBe(42)
     await expect(sync.close()).resolves.toBeUndefined()
+  })
+
+  it('flush() writes the latest position now, bypassing the throttle, without closing anything', async () => {
+    const wrapped: NativeProgressSync = { observe: vi.fn(), flush: vi.fn().mockResolvedValue(undefined), close: vi.fn() }
+    const { sync, storage, write, advance } = setup(wrapped)
+    sync.observe(snapshot({ currentTime: 10 })) // first snapshot: written
+    advance(1_000) // well inside the 5 s throttle window
+    sync.observe(snapshot({ currentTime: 11 })) // throttled: not written
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(storage.read('b1')?.currentTime).toBe(10)
+
+    await sync.flush()
+
+    expect(write).toHaveBeenCalledTimes(2)
+    expect(storage.read('b1')?.currentTime).toBe(11)
+    expect(wrapped.flush).toHaveBeenCalledTimes(1)
+    expect(wrapped.close).not.toHaveBeenCalled()
+
+    // Still open afterwards: playback continues and observe keeps recording and delegating.
+    advance(1_000)
+    sync.observe(snapshot({ currentTime: 12 }))
+    expect(wrapped.observe).toHaveBeenCalledTimes(3)
+    await sync.close()
+    expect(storage.read('b1')?.currentTime).toBe(12)
+  })
+
+  it('flush() never rejects when the wrapped sync rejects, and still writes locally', async () => {
+    const wrapped: NativeProgressSync = { observe: vi.fn(), flush: vi.fn().mockRejectedValue(new Error('server gone')), close: vi.fn() }
+    const { sync, storage } = setup(wrapped)
+    sync.observe(snapshot({ currentTime: 42 }))
+
+    await expect(sync.flush()).resolves.toBeUndefined()
+    expect(wrapped.flush).toHaveBeenCalledTimes(1)
+    expect(storage.read('b1')?.currentTime).toBe(42)
+  })
+
+  it('flush() over an unavailable store, with no wrapped sync and no snapshot yet, resolves quietly', async () => {
+    const broken = createLocalStorageOfflineProgress(() => {
+      throw new Error('no storage')
+    })
+    const sync = createOfflineProgressSync('b1', null, { storage: broken })
+    await expect(sync.flush()).resolves.toBeUndefined()
+    sync.observe(snapshot({ currentTime: 3 }))
+    await expect(sync.flush()).resolves.toBeUndefined()
+  })
+
+  it('flush() after close() writes nothing locally', async () => {
+    const { sync, write } = setup()
+    sync.observe(snapshot({ currentTime: 5 }))
+    await sync.close()
+    write.mockClear()
+    await sync.flush()
+    expect(write).not.toHaveBeenCalled()
   })
 
   it('does nothing local after close and does not write on close without any snapshot', async () => {
@@ -342,7 +397,7 @@ describe('createOfflineProgressSync', () => {
     const broken = createLocalStorageOfflineProgress(() => {
       throw new Error('no storage')
     })
-    const wrapped: NativeProgressSync = { observe: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }
+    const wrapped: NativeProgressSync = { observe: vi.fn(), flush: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }
     const sync = createOfflineProgressSync('b1', wrapped, { storage: broken })
 
     expect(() => sync.observe(snapshot({ currentTime: 3 }))).not.toThrow()

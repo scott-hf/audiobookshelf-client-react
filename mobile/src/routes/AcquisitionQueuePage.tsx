@@ -8,12 +8,14 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import LoadingView from '../components/LoadingView'
 import PageMessage from '../components/ui/PageMessage'
 import { useAcquisition } from '../contexts/AcquisitionContext'
+import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
 
 /** Minimal shape this page needs -- mirrors DiscoverPage's DiscoverApi pattern so tests can
  * inject a fake implementation via AuthContext. */
 export type AcquisitionQueueApi = Pick<MobileAcquisitionClient, 'retryAcquisition' | 'cancelAcquisition'>
 
 export default function AcquisitionQueuePage() {
+  const t = useTypeSafeTranslations()
   const { libraryId } = useParams<{ libraryId: string }>()
   const { acquisitionClient } = useAuth()
   const { getQueue, ensureQueueLoaded, applyAcquisition } = useAcquisition()
@@ -64,12 +66,16 @@ export default function AcquisitionQueuePage() {
   }
 
   if (queue === undefined) {
-    return <LoadingView label="Loading queue…" />
+    return <LoadingView label={t('MessageMobileLoadingAcquisitionQueue')} />
   }
 
   return (
     <div>
-      <h1 className="text-foreground mb-3 text-lg font-semibold">Acquisition Queue</h1>
+      <h1 className="text-foreground mb-1 text-lg font-semibold">{t('HeaderAcquisitionQueue')}</h1>
+      {/* Always visible: these rows track the server fetching books into its library, not downloads to this device. */}
+      <p className="text-foreground-muted mb-3 text-sm leading-snug" data-testid="acquisition-queue-explainer">
+        {t('MessageMobileAcquisitionQueueExplainer')}
+      </p>
 
       {error && (
         <p role="alert" className="text-error mb-3 text-sm">
@@ -78,7 +84,7 @@ export default function AcquisitionQueuePage() {
       )}
 
       {queue.length === 0 ? (
-        <PageMessage message="Nothing queued yet." description="Releases you acquire from Discover show up here." />
+        <PageMessage message={t('MessageAcquisitionQueueEmpty')} description={t('MessageMobileAcquisitionQueueEmptyDescription')} />
       ) : (
         <div className="flex flex-col gap-2" data-testid="acquisition-queue">
           {queue.map((acquisition) => (
@@ -97,8 +103,8 @@ export default function AcquisitionQueuePage() {
 
       <ConfirmDialog
         isOpen={!!pendingCancel}
-        message="Cancel this acquisition?"
-        confirmLabel="Yes, cancel"
+        message={t('MessageConfirmCancelAcquisition')}
+        confirmLabel={t('ButtonMobileConfirmCancelAcquisition')}
         confirmColor="bg-error"
         processing={!!cancellingId}
         onClose={() => setPendingCancel(null)}

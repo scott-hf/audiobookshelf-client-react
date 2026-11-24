@@ -15,14 +15,25 @@ export interface AbsMediaProgress {
   progress: number
 }
 
+/** One chapter as ABS reports it on an expanded library item (`start`/`end` in seconds). */
+export interface AbsChapter {
+  id: number
+  start: number
+  end: number
+  title: string
+}
+
 export interface AbsLibraryItemMedia {
   metadata: {
     title: string
     authorName?: string | null
+    narratorName?: string | null
     description?: string | null
   }
   coverPath?: string | null
   duration?: number | null
+  /** Only present on an expanded item (`getLibraryItem`), not on list results. */
+  chapters?: AbsChapter[] | null
 }
 
 export interface AbsLibraryItem {
