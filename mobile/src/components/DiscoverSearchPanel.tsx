@@ -199,6 +199,7 @@ export default function DiscoverSearchPanel({
           value={query}
           onChange={editQuery}
           enterKeyHint="search"
+          trimWhitespace
           className="min-w-0 flex-1"
           clearable
           onClear={() => editQuery('')}

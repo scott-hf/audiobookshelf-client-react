@@ -113,10 +113,13 @@ export class SessionStore {
 
   async login(serverUrlInput: string, username: string, password: string): Promise<void> {
     const serverUrl = normalizeServerUrl(serverUrlInput)
+    // The username is typed text and is trimmed here, at the owner, so a paste or autofill that
+    // never blurred the field cannot send padding. The password is NOT trimmed: whitespace in it
+    // is significant.
     const response = await this.fetcher(`${serverUrl}/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-return-tokens': 'true' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username: username.trim(), password })
     })
     const data = await checkedJson<AbsLoginResponse>(response)
     if (!data.user.accessToken || !data.user.refreshToken) {

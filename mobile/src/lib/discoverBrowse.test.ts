@@ -123,6 +123,18 @@ describe('discover URL state', () => {
     expect(toDiscoverSearchParams(query({ q: '   ' })).toString()).toBe('')
   })
 
+  // The URL is the state key for the Search tab: a padded and an unpadded query must be ONE entry.
+  it('trims a padded search, so padded and unpadded forms share one URL and one parsed value', () => {
+    expect(parse('q=%20%20dune%20%0A').q).toBe('dune')
+    expect(toDiscoverSearchParams(query({ q: '  dune ' })).toString()).toBe('q=dune')
+    expect(toDiscoverSearchParams(query({ q: '  dune ' })).toString()).toBe(toDiscoverSearchParams(query({ q: 'dune' })).toString())
+    expect(parse(toDiscoverSearchParams(query({ q: ' dune ' })).toString())).toEqual(parse('q=dune'))
+  })
+
+  it('keeps interior whitespace in a search', () => {
+    expect(parse('q=%20project%20%20hail%20mary%20').q).toBe('project  hail mary')
+  })
+
   it('treats any mode other than browse as search', () => {
     expect(parse('mode=bogus').mode).toBe('search')
     expect(parse('mode=browse').mode).toBe('browse')

@@ -52,6 +52,18 @@ describe('SessionStore', () => {
     expect(fetcher).toHaveBeenCalledTimes(4)
   })
 
+  it('trims the server address and username it logs in with, but never the password', async () => {
+    fetcher.mockResolvedValueOnce(json(loginResponse))
+
+    const session = new SessionStore({ vault, fetcher: fetcher as unknown as typeof fetch })
+    await session.login('  https://books.test/ \n', ' scott\t', ' pass word ')
+
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://books.test/login')
+    expect(JSON.parse(String(init.body))).toEqual({ username: 'scott', password: ' pass word ' })
+    expect(vault.write).toHaveBeenLastCalledWith(expect.objectContaining({ serverUrl: 'https://books.test' }))
+  })
+
   it('surfaces the original 401 when refresh fails', async () => {
     fetcher.mockResolvedValueOnce(json(loginResponse)).mockResolvedValueOnce(new Response('', { status: 401 })).mockResolvedValueOnce(new Response('', { status: 401 }))
 

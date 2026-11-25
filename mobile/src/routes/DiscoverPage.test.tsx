@@ -240,6 +240,57 @@ describe('DiscoverPage', () => {
     )
   })
 
+  describe('input sanitising', () => {
+    const emptyResponse: SearchResponse = { searchSessionId: 'search-1', results: [] }
+    const clientWith = (searchAudiobooks: ReturnType<typeof vi.fn>) => ({
+      searchAudiobooks,
+      createAcquisition: vi.fn(),
+      listAcquisitions: vi.fn().mockResolvedValue([]),
+      status: vi.fn().mockResolvedValue(null)
+    })
+
+    it('sends a padded query trimmed, and shows the trimmed text in the box afterwards', async () => {
+      const user = userEvent.setup()
+      const searchAudiobooks = vi.fn().mockResolvedValue(emptyResponse)
+      renderDiscover(clientWith(searchAudiobooks))
+
+      const box = screen.getByLabelText('Search audiobooks')
+      await user.type(box, '   dune  {Enter}')
+
+      await waitFor(() => expect(searchAudiobooks).toHaveBeenCalledTimes(1))
+      expect(searchAudiobooks).toHaveBeenCalledWith('lib1', 'dune', { signal: expect.any(AbortSignal) })
+      // Submitting drops focus, which trims the box, so what the user sees is what was sent.
+      await waitFor(() => expect(box).toHaveValue('dune'))
+    })
+
+    it('sends the same query for "dune" and " dune " (one value, not two)', async () => {
+      const user = userEvent.setup()
+      const searchAudiobooks = vi.fn().mockResolvedValue(emptyResponse)
+      renderDiscover(clientWith(searchAudiobooks))
+
+      const box = screen.getByLabelText('Search audiobooks')
+      await user.type(box, 'dune{Enter}')
+      await waitFor(() => expect(searchAudiobooks).toHaveBeenCalledTimes(1))
+      await user.clear(box)
+      await user.type(box, ' dune {Enter}')
+      await waitFor(() => expect(searchAudiobooks).toHaveBeenCalledTimes(2))
+
+      expect(searchAudiobooks.mock.calls.map((call) => call[1])).toEqual(['dune', 'dune'])
+    })
+
+    it('does not fire a request for a whitespace-only query, by button or by Enter', async () => {
+      const user = userEvent.setup()
+      const searchAudiobooks = vi.fn().mockResolvedValue(emptyResponse)
+      renderDiscover(clientWith(searchAudiobooks))
+
+      const box = screen.getByLabelText('Search audiobooks')
+      await user.type(box, '    {Enter}')
+
+      expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled()
+      expect(searchAudiobooks).not.toHaveBeenCalled()
+    })
+  })
+
   it('explains before any search that acquiring is server-side and offline listening needs a device download', async () => {
     renderDiscover({ searchAudiobooks: vi.fn(), createAcquisition: vi.fn(), listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
 

@@ -67,7 +67,10 @@ export const SearchResponseSchema = z.object({
 
 export const SearchQuerySchema = z.object({
   libraryId: z.string().min(1),
-  q: z.string().min(1)
+  // Free text typed by a person. `.trim()` runs BEFORE `.min(1)` (zod runs string checks in
+  // order), so a whitespace-only `q` is rejected as empty rather than accepted as non-empty, and
+  // the value every consumer sees -- Librarr, the stored search session -- is already trimmed.
+  q: z.string().trim().min(1)
 })
 
 /** Books per browse page, fixed by Librarr (`internal/discover/browse.go`). */
@@ -105,7 +108,10 @@ export const DiscoverItemSchema = z.object({
 
 export const DiscoverBrowseQuerySchema = z.object({
   catalog: z.string().min(1).max(64),
-  genre: z.string().max(128).optional(),
+  // Trimmed so a padded genre ("fantasy ") is the same genre as "fantasy" upstream, and a
+  // whitespace-only one collapses to "" -- which the route already treats as "no genre".
+  // `catalog` is deliberately NOT trimmed: it is an opaque id Librarr listed, never typed.
+  genre: z.string().trim().max(128).optional(),
   // `offset` must be a multiple of the page size: Librarr validates this itself and a stray
   // value would come back as `invalid_request`, so reject it at the edge instead. Omission is
   // 0, but a BLANK value is a client bug and must not silently coerce to 0 -- hence the

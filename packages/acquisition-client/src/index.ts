@@ -133,8 +133,10 @@ export function createAcquisitionClient(options: AcquisitionClientOptions) {
   }
   return {
     status: (requestOptions?: RequestOptions) => request<AcquisitionStatusResponse>('/status', {}, requestOptions),
+    // `q` is typed text: trimmed here so no caller can put padding on the wire (the gateway trims
+    // too, but a client that sends it clean avoids relying on that). `libraryId` is an opaque id.
     searchAudiobooks: (libraryId: string, q: string, requestOptions: RequestOptions = {}) =>
-      request<SearchResponse>(`/search/audiobooks?${new URLSearchParams({ libraryId, q })}`, {}, { timeoutMs: options.searchTimeoutMs ?? SEARCH_TIMEOUT_MS, ...requestOptions }),
+      request<SearchResponse>(`/search/audiobooks?${new URLSearchParams({ libraryId, q: q.trim() })}`, {}, { timeoutMs: options.searchTimeoutMs ?? SEARCH_TIMEOUT_MS, ...requestOptions }),
     getDiscoverOptions: (requestOptions: RequestOptions = {}) => request<DiscoverOptionsResponse>('/discover/options', {}, requestOptions),
     browseDiscover: (params: { catalog: string; genre?: string; offset?: number }, requestOptions: RequestOptions = {}) => {
       const query = new URLSearchParams({ catalog: params.catalog })

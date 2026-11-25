@@ -85,6 +85,16 @@ describe('acquisition client', () => {
     expect(SEARCH_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TIMEOUT_MS)
   })
 
+  it('sends a padded search query trimmed, the same bytes as the unpadded one', async () => {
+    const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ searchSessionId: 's1', results: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const c = client({ fetcher })
+    await c.searchAudiobooks('lib1', '  dune \n')
+    await c.searchAudiobooks('lib1', 'dune')
+    const urls = fetcher.mock.calls.map((call) => String(call[0]))
+    expect(new URL(urls[0]).searchParams.get('q')).toBe('dune')
+    expect(urls[0]).toBe(urls[1])
+  })
+
   describe('discover', () => {
     const browseBody = { status: 'ok', catalog: 'popular', genre: '', offset: 0, nextOffset: 20, partial: false, items: [] }
     const okFetcher = (body: unknown = browseBody) =>

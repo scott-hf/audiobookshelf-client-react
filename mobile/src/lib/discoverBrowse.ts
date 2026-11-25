@@ -91,8 +91,9 @@ function cleanLabel(raw: string | null | undefined): string | null {
  */
 export function parseDiscoverQuery(params: URLSearchParams, options: DiscoverOptionsResponse | null): DiscoverQuery {
   const mode: DiscoverMode = params.get('mode') === 'browse' ? 'browse' : 'search'
-  const rawQ = params.get('q') ?? ''
-  const q = rawQ.trim() === '' ? '' : rawQ
+  // Trimmed (not just blank-checked): the URL is the state key for the Search tab, so " dune " and
+  // "dune" must parse to the same value or they would be two entries in history and in state.
+  const q = (params.get('q') ?? '').trim()
 
   const rawCatalog = params.get('catalog')?.trim() ?? ''
   if (rawCatalog === FOR_YOU_ID) return { mode, selection: { kind: 'forYou' }, q }
@@ -123,7 +124,8 @@ export function toDiscoverSearchParams(query: DiscoverQuery): URLSearchParams {
       if (label !== null) params.set('genreLabel', label)
     }
   }
-  if (query.q.trim() !== '') params.set('q', query.q)
+  const q = query.q.trim()
+  if (q !== '') params.set('q', q)
   return params
 }
 

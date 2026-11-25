@@ -158,6 +158,45 @@ describe('discover routes', () => {
       expect(second.searchParams.has('genre')).toBe(false)
     })
 
+    it('trims a padded genre before it reaches Librarr and echoes the trimmed value', async () => {
+      librarrReply = () => json({ ...browseFixture, catalog: 'popular', genre: 'science fiction', offset: 0, next_offset: 20 })
+      const padded = await get(`/discover/browse?${new URLSearchParams({ catalog: 'popular', genre: '  science fiction \n' })}`)
+      expect(padded.statusCode).toBe(200)
+      expect(padded.json().genre).toBe('science fiction')
+      expect(discoverUrls()[0].searchParams.get('genre')).toBe('science fiction')
+    })
+
+    it('treats a whitespace-only genre as no genre', async () => {
+      librarrReply = () => json({ ...browseFixture, catalog: 'popular', genre: '', offset: 0 })
+      const blank = await get(`/discover/browse?${new URLSearchParams({ catalog: 'popular', genre: '   ' })}`)
+      expect(blank.statusCode).toBe(200)
+      expect(blank.json().genre).toBe('')
+      expect(discoverUrls()[0].searchParams.has('genre')).toBe(false)
+    })
+
+    describe('search query', () => {
+      const searchUrls = () => librarrUrls.filter((u) => u.includes('/api/search/audiobooks')).map((u) => new URL(u))
+      const search = (q: string) => get(`/search/audiobooks?${new URLSearchParams({ libraryId: 'lib1', q })}`)
+
+      it('sends a padded query to Librarr trimmed, identically to the unpadded one', async () => {
+        librarrReply = () => json({ results: [] })
+        expect((await search('  Project Hail Mary \n')).statusCode).toBe(200)
+        expect((await search('Project Hail Mary')).statusCode).toBe(200)
+        const sent = searchUrls().map((u) => u.searchParams.get('q'))
+        expect(sent).toEqual(['Project Hail Mary', 'Project Hail Mary'])
+      })
+
+      it.each([
+        ['an empty query', ''],
+        ['a whitespace-only query', ' \t\n  ']
+      ])('rejects %s with the same 400 invalid_query, without calling Librarr', async (_name, q) => {
+        const response = await search(q)
+        expect(response.statusCode).toBe(400)
+        expect(response.json()).toMatchObject({ code: 'invalid_query', retryable: false })
+        expect(searchUrls()).toHaveLength(0)
+      })
+    })
+
     it('maps Librarr upstream_unavailable (HTTP 200, no echoed fields) to 502 discover_upstream_unavailable', async () => {
       librarrReply = () => json(outageFixture)
       const response = await get('/discover/browse?catalog=popular')
