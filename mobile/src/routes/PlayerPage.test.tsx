@@ -251,6 +251,96 @@ describe('PlayerPage transport controls (native)', () => {
   })
 })
 
+// jsdom does no layout, so these pin the STRUCTURE the "controls visible without scrolling" fix
+// relies on (a non-scrolling, non-shrinking controls dock beside a self-scrolling info region),
+// not any pixel position. Whether the controls actually land on screen is a device check.
+describe('PlayerPage layout (structural guarantees)', () => {
+  const SCROLLING = /(^|\s)overflow(-y)?-(auto|scroll|hidden)(\s|$)/
+
+  function ancestorsOf(element: HTMLElement): HTMLElement[] {
+    const chain: HTMLElement[] = []
+    for (let node = element.parentElement; node && node !== document.body; node = node.parentElement) chain.push(node)
+    return chain
+  }
+
+  it('renders every transport control inside a shrink-0 dock that has no scrolling ancestor', async () => {
+    renderPlayer()
+    await settleLoaded()
+    emit({ state: 'playing', currentTime: 65, duration: 3600, playWhenReady: true })
+
+    const dock = screen.getByTestId('player-controls')
+    expect(dock.className).toContain('shrink-0')
+
+    for (const control of [
+      screen.getByRole('button', { name: 'Pause' }),
+      screen.getByRole('button', { name: 'Jump backward' }),
+      screen.getByRole('button', { name: 'Jump forward' }),
+      screen.getByRole('slider', { name: 'Seek' }),
+      screen.getByText('1:05'),
+      screen.getByText('1:00:00')
+    ]) {
+      expect(dock).toContainElement(control)
+    }
+
+    // Neither the dock nor anything above it may scroll or clip it: the controls must not be able
+    // to move out of view by scrolling a region they sit in.
+    for (const node of [dock, ...ancestorsOf(dock)]) expect(node.className).not.toMatch(SCROLLING)
+  })
+
+  it('keeps the cover and metadata in a separate self-scrolling region that does not contain the controls', async () => {
+    downloadedItems.localItems = [
+      {
+        libraryItemId: 'b1',
+        serverConnectionId: 'https://books.test',
+        folderUri: '/d/b1',
+        manifestJson: JSON.stringify({ title: 'Long Book', author: 'An Author', coverPath: '/d/b1/cover.jpg', tracks: [{ trackIndex: 0, path: '/d/b1/a.mp3', duration: 3600 }] }),
+        completedAt: 1
+      }
+    ]
+    renderPlayer()
+    const heading = await screen.findByRole('heading', { name: 'Long Book' })
+
+    const info = screen.getByTestId('player-info')
+    const dock = screen.getByTestId('player-controls')
+    expect(info.className).toMatch(/overflow-y-auto/)
+    expect(info.className).toContain('min-h-0')
+    expect(info.className).toContain('flex-1')
+    expect(info).toContainElement(heading)
+    expect(info).toContainElement(screen.getByText('An Author'))
+    expect(info).toContainElement(document.querySelector('img'))
+    expect(info).not.toContainElement(dock)
+    expect(dock).not.toContainElement(info)
+
+    // Siblings under one flex-column root, info first, so the dock is the bottom-most item and
+    // the root fills the shell's scroll area (h-full) with a floor (min-h-*) below which the
+    // shell's own scrolling takes over instead of clipping the dock.
+    const root = info.parentElement as HTMLElement
+    expect(dock.parentElement).toBe(root)
+    expect(Array.from(root.children)).toEqual([info, dock])
+    expect(root.className).toContain('flex-col')
+    expect(root.className).toContain('h-full')
+    expect(root.className).toMatch(/min-h-\[/)
+  })
+
+  it('caps the cover height by the viewport rather than its width', async () => {
+    renderPlayer()
+    await settleLoaded()
+    const coverFrame = screen.getByTestId('player-info').firstElementChild as HTMLElement
+    expect(coverFrame.className).toMatch(/h-\[min\(\d+dvh,/)
+    expect(coverFrame.className).toContain('shrink-0')
+  })
+
+  it('keeps an error and its Retry button inside the dock so both stay on screen together', async () => {
+    renderPlayer()
+    await settleLoaded()
+    emit({ state: 'error', error: 'Source error' })
+
+    const dock = screen.getByTestId('player-controls')
+    expect(dock).toContainElement(await screen.findByRole('alert'))
+    expect(dock).toContainElement(screen.getByRole('button', { name: 'Retry' }))
+  })
+})
+
 describe('PlayerPage watchdogs (native)', () => {
   it('reports a stall once buffering with intent to play outlasts the threshold', async () => {
     renderPlayer()

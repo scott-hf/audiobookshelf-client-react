@@ -109,20 +109,31 @@ export default function PlayerPage() {
   }
 
   return (
-    <div className="flex min-h-full flex-col items-center">
-      <div className="w-full max-w-xs pt-2">
-        <BookCover title={title ?? 'Now playing'} authorName={authorName} coverUrl={coverUrl} />
+    // Layout contract (see PlayerPage.test.tsx "layout"): the root fills the app shell's scroll area
+    // (`h-full`) and splits it into a shrinkable info region (`data-testid="player-info"`, scrolls
+    // on its own) and a `shrink-0` controls dock that is NOT inside any overflow container. The
+    // transport controls are therefore on screen at first paint at any height that fits the dock;
+    // only below `min-h-[15rem]` does the shell's own scroll area take over, so nothing is clipped.
+    // The shell (App.tsx) already keeps this area above AppTabBar and the safe-area insets.
+    <div className="flex h-full min-h-[15rem] flex-col items-center">
+      <div data-testid="player-info" className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overscroll-contain">
+        {/* Height is capped by the viewport, not the width: the old `w-full max-w-xs` + 2:3 aspect
+            made a 480px-tall cover that alone pushed Pause off-screen. `w-auto` on the cover lets
+            the aspect ratio derive the width from this height. */}
+        <div className="flex h-[min(40dvh,18rem)] w-full shrink-0 justify-center pt-1">
+          <BookCover title={title ?? 'Now playing'} authorName={authorName} coverUrl={coverUrl} className="h-full w-auto" />
+        </div>
+
+        <div className="mt-4 w-full max-w-sm text-center">
+          {title && <h2 className="text-foreground text-lg leading-tight font-bold">{title}</h2>}
+          {authorName && <p className="text-foreground-muted mt-0.5 text-sm">{authorName}</p>}
+        </div>
       </div>
 
-      <div className="mt-5 w-full max-w-sm text-center">
-        {title && <h2 className="text-foreground text-lg leading-tight font-bold">{title}</h2>}
-        {authorName && <p className="text-foreground-muted mt-0.5 text-sm">{authorName}</p>}
-        <p className="text-foreground-subdued mt-1 text-xs" aria-live="polite">
+      <div data-testid="player-controls" className="mt-3 w-full max-w-sm shrink-0">
+        <p className="text-foreground-subdued mb-1 text-center text-xs" aria-live="polite">
           {statusLabel}
         </p>
-      </div>
-
-      <div className="mt-5 w-full max-w-sm">
         <div className="relative">
           {/* Visual track sits behind the native range input, which is transparent and full-width */}
           <div className="bg-track-bg pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full">
@@ -150,99 +161,99 @@ export default function PlayerPage() {
           <span>{formatTime(state.currentTime)}</span>
           <span>{formatTime(state.duration)}</span>
         </p>
+
+        <div className="mt-3 flex w-full items-center justify-center gap-6">
+          <button
+            type="button"
+            onClick={() => jumpBackward()}
+            aria-label="Jump backward"
+            className="text-foreground-muted hover:text-foreground relative flex flex-col items-center transition-colors"
+          >
+            <span className="material-symbols text-4xl" aria-hidden="true">
+              replay
+            </span>
+            <span className="text-xxs absolute inset-0 flex items-center justify-center pt-1 font-semibold" aria-hidden="true">
+              {JUMP_BACK_SECONDS}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (showRetry) play(itemId).catch(() => {})
+              else if (showPause) pause()
+              else void resume()
+            }}
+            disabled={controlsDisabled}
+            aria-label={showRetry ? t('ButtonRetry') : showPause ? t('ButtonPause') : t('ButtonPlay')}
+            className="bg-accent text-black-600 disabled:bg-bg-disabled disabled:text-disabled relative flex size-16 items-center justify-center rounded-full shadow-lg transition-transform active:scale-95 disabled:active:scale-100"
+          >
+            {showSpinner && (
+              <span
+                data-testid="player-spinner"
+                className="border-accent/30 border-t-accent pointer-events-none absolute -inset-1.5 animate-spin rounded-full border-2"
+                aria-hidden="true"
+              />
+            )}
+            <span className="material-symbols fill text-4xl" aria-hidden="true">
+              {showRetry ? 'refresh' : showPause ? 'pause' : 'play_arrow'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => jumpForward()}
+            aria-label="Jump forward"
+            className="text-foreground-muted hover:text-foreground relative flex flex-col items-center transition-colors"
+          >
+            <span className="material-symbols -scale-x-100 text-4xl" aria-hidden="true">
+              replay
+            </span>
+            <span className="text-xxs absolute inset-0 flex items-center justify-center pt-1 font-semibold" aria-hidden="true">
+              {JUMP_FORWARD_SECONDS}
+            </span>
+          </button>
+        </div>
+
+        <div className="mt-3 flex w-full items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const currentIndex = PLAYBACK_RATES.indexOf(rate)
+              const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]
+              setRate(next)
+            }}
+            aria-label={`Playback speed ${rate}x`}
+            className="bg-primary border-border text-foreground hover:bg-bg-hover flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-semibold tabular-nums transition-colors"
+          >
+            <span className="material-symbols text-base" aria-hidden="true">
+              speed
+            </span>
+            {rate}x
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleSleepTimer}
+            aria-pressed={sleepTimerOn}
+            className={mergeClasses(
+              'flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors',
+              sleepTimerOn ? 'bg-accent border-accent text-black-600' : 'bg-primary border-border text-foreground hover:bg-bg-hover'
+            )}
+          >
+            <span className="material-symbols text-base" aria-hidden="true">
+              bedtime
+            </span>
+            {sleepTimerOn ? 'Sleep 30m on' : 'Sleep 30m'}
+          </button>
+        </div>
+
+        {state.error && (
+          <p role="alert" className="text-error mt-3 text-center text-sm">
+            {state.error}
+          </p>
+        )}
       </div>
-
-      <div className="mt-6 flex w-full max-w-sm items-center justify-center gap-6">
-        <button
-          type="button"
-          onClick={() => jumpBackward()}
-          aria-label="Jump backward"
-          className="text-foreground-muted hover:text-foreground relative flex flex-col items-center transition-colors"
-        >
-          <span className="material-symbols text-4xl" aria-hidden="true">
-            replay
-          </span>
-          <span className="text-xxs absolute inset-0 flex items-center justify-center pt-1 font-semibold" aria-hidden="true">
-            {JUMP_BACK_SECONDS}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (showRetry) play(itemId).catch(() => {})
-            else if (showPause) pause()
-            else void resume()
-          }}
-          disabled={controlsDisabled}
-          aria-label={showRetry ? t('ButtonRetry') : showPause ? t('ButtonPause') : t('ButtonPlay')}
-          className="bg-accent text-black-600 disabled:bg-bg-disabled disabled:text-disabled relative flex size-16 items-center justify-center rounded-full shadow-lg transition-transform active:scale-95 disabled:active:scale-100"
-        >
-          {showSpinner && (
-            <span
-              data-testid="player-spinner"
-              className="border-accent/30 border-t-accent pointer-events-none absolute -inset-1.5 animate-spin rounded-full border-2"
-              aria-hidden="true"
-            />
-          )}
-          <span className="material-symbols fill text-4xl" aria-hidden="true">
-            {showRetry ? 'refresh' : showPause ? 'pause' : 'play_arrow'}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => jumpForward()}
-          aria-label="Jump forward"
-          className="text-foreground-muted hover:text-foreground relative flex flex-col items-center transition-colors"
-        >
-          <span className="material-symbols -scale-x-100 text-4xl" aria-hidden="true">
-            replay
-          </span>
-          <span className="text-xxs absolute inset-0 flex items-center justify-center pt-1 font-semibold" aria-hidden="true">
-            {JUMP_FORWARD_SECONDS}
-          </span>
-        </button>
-      </div>
-
-      <div className="mt-6 flex w-full max-w-sm items-center justify-center gap-3">
-        <button
-          type="button"
-          onClick={() => {
-            const currentIndex = PLAYBACK_RATES.indexOf(rate)
-            const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]
-            setRate(next)
-          }}
-          aria-label={`Playback speed ${rate}x`}
-          className="bg-primary border-border text-foreground hover:bg-bg-hover flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-semibold tabular-nums transition-colors"
-        >
-          <span className="material-symbols text-base" aria-hidden="true">
-            speed
-          </span>
-          {rate}x
-        </button>
-
-        <button
-          type="button"
-          onClick={toggleSleepTimer}
-          aria-pressed={sleepTimerOn}
-          className={mergeClasses(
-            'flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors',
-            sleepTimerOn ? 'bg-accent border-accent text-black-600' : 'bg-primary border-border text-foreground hover:bg-bg-hover'
-          )}
-        >
-          <span className="material-symbols text-base" aria-hidden="true">
-            bedtime
-          </span>
-          {sleepTimerOn ? 'Sleep 30m on' : 'Sleep 30m'}
-        </button>
-      </div>
-
-      {state.error && (
-        <p role="alert" className="text-error mt-5 text-center text-sm">
-          {state.error}
-        </p>
-      )}
     </div>
   )
 }
