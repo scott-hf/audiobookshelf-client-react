@@ -113,6 +113,20 @@ describe('AcquisitionService', () => {
     expect(acquisition.state).toBe('submitted')
   })
 
+  it('stores the provider as the source label, not the search tab', async () => {
+    // The row's `source` is the tab ("audiobook"); `indexer` is the provider. Storing the
+    // tab made a queue row read "audiobook" while the search result it came from read
+    // "AudioBookBay" -- the same mapping bug as the release pills, one layer down.
+    const search = await h.searchService.search('u1', 'lib1', 'Project Hail Mary')
+    const abbRelease = search.results[1]
+    const body = { searchSessionId: search.searchSessionId, releaseId: abbRelease.releaseId, idempotencyKey: crypto.randomUUID() }
+    const acquisition = await h.acquisitionService.create({ id: 'u1' }, 'lib1', body)
+
+    const record = h.acquisitionRepo.findById(acquisition.id)
+    expect(record?.sourceLabel).toBe('AudioBookBay')
+    expect(record?.sourceLabel).toBe(abbRelease.sourceLabel)
+  })
+
   it('goes to needs_attention, never title matching, when Librarr gives no trackable identity', async () => {
     h.submitResponse.hash = undefined
     const search = await h.searchService.search('u1', 'lib1', 'Project Hail Mary')

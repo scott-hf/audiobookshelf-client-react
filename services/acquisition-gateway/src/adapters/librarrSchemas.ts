@@ -15,6 +15,11 @@ export const LibrarrSearchResultSchema = z
     author: z.string().optional().default(''),
     size: z.number().int().nonnegative().optional(),
     seeders: z.number().int().optional(),
+    // `source` is the search TAB ("audiobook"), not the provider; `indexer` is the provider
+    // ("AudioBookBay"). `size_human` is a STRING, and is "?" when the source does not know --
+    // both confirmed live on AudioBookBay rows, which carry no `size`/`format`/`author`/`seeders`.
+    indexer: z.string().optional(),
+    size_human: z.string().optional(),
     format: z.string().optional(),
     // internal/models/book.go:24 is `json:"media_type,omitempty"`, and AudioBookBay's own
     // Search() (internal/search/audiobookbay.go) never sets it -- it signals "this is an

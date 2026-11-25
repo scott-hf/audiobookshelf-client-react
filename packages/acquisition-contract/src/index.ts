@@ -45,11 +45,17 @@ export const SearchReleaseSchema = z.object({
   title: z.string(),
   author: z.string(),
   narrators: z.array(z.string()),
-  format: z.string(),
+  // `null` means the source did not say. There is deliberately no "unknown" sentinel string: a
+  // sentinel renders as if it were data (a pill reading "UNKNOWN"). AudioBookBay's search listing
+  // carries no format at all -- it exists only on the detail page.
+  format: z.string().nullable(),
   sizeBytes: z.number().nullable(),
+  // The source's own human-readable size ("1.2 GB"), passed through untouched and never parsed
+  // into bytes (lossy, and sometimes not a size at all). `null` when the source sent nothing
+  // usable. A client shows `sizeBytes` when it is set, else this.
+  sizeLabel: z.string().nullable(),
   durationSeconds: z.number().nullable(),
   sourceLabel: z.string(),
-  qualityLabel: z.string(),
   seeders: z.number().nullable(),
   coverUrl: z.string().nullable(),
   alreadyOwned: z.boolean(),

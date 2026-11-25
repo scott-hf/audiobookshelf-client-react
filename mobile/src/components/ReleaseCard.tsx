@@ -33,6 +33,8 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
   const t = useTypeSafeTranslations()
   const canAcquire = release.requestable && !release.alreadyOwned
   const narrators = release.narrators.join(', ')
+  // A real byte count wins; otherwise the source's own size string; otherwise no size pill.
+  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : release.sizeLabel
 
   return (
     <div className="bg-primary border-border rounded-md border p-3" data-testid="release-card">
@@ -43,11 +45,10 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
       </p>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge tone="info">{release.format.toUpperCase()}</Badge>
-        {release.sizeBytes != null && <Badge>{bytesPretty(release.sizeBytes)}</Badge>}
+        {release.format != null && <Badge tone="info">{release.format.toUpperCase()}</Badge>}
+        {sizeText != null && <Badge>{sizeText}</Badge>}
         {release.durationSeconds != null && <Badge>{durationPretty(release.durationSeconds)}</Badge>}
         <Badge>{release.sourceLabel}</Badge>
-        <Badge>{release.qualityLabel}</Badge>
         {release.seeders != null && <Badge>{t('LabelSeeders', { 0: release.seeders })}</Badge>}
         {release.alreadyOwned && <Badge tone="success">{t('LabelMobileAlreadyInServerLibrary')}</Badge>}
       </div>

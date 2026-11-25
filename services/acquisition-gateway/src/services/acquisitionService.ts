@@ -2,7 +2,7 @@ import type { Acquisition } from '@abs/acquisition-contract'
 import { LibrarrApiError, type LibrarrClient } from '../adapters/librarrClient'
 import { AcquisitionRepository, type AcquisitionRecord } from '../db/acquisitionRepository'
 import { DomainError } from '../domain/errors'
-import { opaqueId, isRequestable } from '../domain/releaseIdentity'
+import { opaqueId, isRequestable, sourceLabelOf } from '../domain/releaseIdentity'
 import { trackingKey, trackingKeyKind, trackingKeyValue } from '../domain/librarrTrackingKey'
 import type { SearchService } from './searchService'
 import type { ImportCoordinator } from './importCoordinator'
@@ -93,7 +93,7 @@ export class AcquisitionService {
       author: raw.author ?? '',
       format: raw.format ?? null,
       sizeBytes: raw.size ?? null,
-      sourceLabel: raw.source,
+      sourceLabel: sourceLabelOf(raw),
       state: 'queued',
       createdAt: nowIso,
       updatedAt: nowIso

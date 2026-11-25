@@ -44,7 +44,8 @@ describe('SearchService', () => {
     // torrent (info_hash+magnet), AudioBookBay (abb_url only), NZB (never requestable here).
     expect(response.results[0].requestable).toBe(true)
     expect(response.results[1].requestable).toBe(true)
-    expect(response.results[1].sourceLabel).toBe('audiobook')
+    // The provider (`indexer`), not the search tab (`source: "audiobook"`).
+    expect(response.results[1].sourceLabel).toBe('AudioBookBay')
     expect(response.results[2].requestable).toBe(false)
   })
 

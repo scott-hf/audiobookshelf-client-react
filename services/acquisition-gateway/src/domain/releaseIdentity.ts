@@ -39,17 +39,38 @@ export function isRequestable(
   return false
 }
 
+// Placeholders a source sends in place of a size. "?" is the live-observed case: every
+// AudioBookBay search row carries `size_human: "?"`. The others are defensive.
+const NO_SIZE_PLACEHOLDERS = new Set(['', '?', 'unknown', 'n/a'])
+
+/** Trims a source's human-readable size, or returns null when it carries no information. */
+function normalizeSizeLabel(sizeHuman: string | undefined): string | null {
+  if (sizeHuman == null) return null
+  const trimmed = sizeHuman.trim()
+  return NO_SIZE_PLACEHOLDERS.has(trimmed.toLowerCase()) ? null : trimmed
+}
+
+/**
+ * The provider's display name. `indexer` is the provider ("AudioBookBay"); `source` is only
+ * the search tab ("audiobook"), so it is the fallback -- including for a blank indexer, so
+ * the label is never empty. Shared with the stored acquisition record on purpose: a queue row
+ * reading "audiobook" where the search result reads "AudioBookBay" is the same bug twice.
+ */
+export function sourceLabelOf(raw: Pick<LibrarrSearchResult, 'indexer' | 'source'>): string {
+  return raw.indexer?.trim() || raw.source
+}
+
 export function toPublicRelease(raw: LibrarrSearchResult, releaseId: string): SearchRelease {
   return {
     releaseId,
     title: raw.title,
     author: raw.author ?? '',
     narrators: [],
-    format: raw.format ?? 'unknown',
+    format: raw.format ?? null,
     sizeBytes: raw.size ?? null,
+    sizeLabel: normalizeSizeLabel(raw.size_human),
     durationSeconds: null,
-    sourceLabel: raw.source,
-    qualityLabel: raw.format?.toUpperCase() ?? 'Unknown',
+    sourceLabel: sourceLabelOf(raw),
     seeders: raw.seeders ?? null,
     coverUrl: raw.cover_url ?? null,
     alreadyOwned: raw.in_library ?? false,

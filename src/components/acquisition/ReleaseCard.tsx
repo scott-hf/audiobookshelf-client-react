@@ -23,6 +23,8 @@ export default function ReleaseCard({ release, onAcquire, submitting = false, cl
 
   const canAcquire = release.requestable && !release.alreadyOwned
   const narrators = release.narrators.join(', ')
+  // A real byte count wins; otherwise the source's own size string; otherwise no size pill.
+  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : release.sizeLabel
 
   return (
     <div className={mergeClasses('bg-bg border-border flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between', className)} cy-id="release-card">
@@ -33,11 +35,10 @@ export default function ReleaseCard({ release, onAcquire, submitting = false, cl
           {narrators ? ` · ${narrators}` : ''}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <DetailBadge>{release.format.toUpperCase()}</DetailBadge>
-          {release.sizeBytes != null && <DetailBadge>{bytesPretty(release.sizeBytes)}</DetailBadge>}
+          {release.format != null && <DetailBadge>{release.format.toUpperCase()}</DetailBadge>}
+          {sizeText != null && <DetailBadge>{sizeText}</DetailBadge>}
           {release.durationSeconds != null && <DetailBadge>{formatDuration(release.durationSeconds, t)}</DetailBadge>}
           <DetailBadge>{release.sourceLabel}</DetailBadge>
-          <DetailBadge>{release.qualityLabel}</DetailBadge>
           {release.seeders != null && <DetailBadge>{t('LabelSeeders', { 0: release.seeders })}</DetailBadge>}
           {release.alreadyOwned && (
             <span className="bg-success/20 text-success inline-flex items-center rounded-md px-2 py-0.5 text-xs whitespace-nowrap">{t('LabelAlreadyOwned')}</span>
