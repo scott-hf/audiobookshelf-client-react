@@ -8,6 +8,15 @@
 @import 'tailwindcss' source(none);
 @source "../";
 
+/*
+ * Not enough vertical room to stack things. Keys on height rather than orientation because
+ * height is the actual constraint: a tablet in landscape has plenty and should keep the
+ * portrait layout, while a phone in landscape has ~384px of viewport and cannot stack a cover,
+ * a title and a transport dock without pushing the dock behind the tab bar.
+ * Phone portrait is ~850px, so this never fires there.
+ */
+@custom-variant short (@media (max-height: 32rem));
+
 @import './app.css';
 @import './themes.css';
 

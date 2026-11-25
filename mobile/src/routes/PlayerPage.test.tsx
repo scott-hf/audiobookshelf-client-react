@@ -330,6 +330,32 @@ describe('PlayerPage layout (structural guarantees)', () => {
     expect(coverFrame.className).toContain('shrink-0')
   })
 
+  // jsdom does no layout and does not evaluate media queries, so this guards the contract rather
+  // than the pixels: in a viewport too short to stack (phone landscape), the single column becomes
+  // two side by side. Measured on device before this, the speed/sleep row sat behind the tab bar
+  // until you scrolled 161px and the cover was squeezed to a ~100px sliver.
+  it('splits into two columns when the viewport is too short to stack', async () => {
+    renderPlayer()
+    await settleLoaded()
+
+    const info = screen.getByTestId('player-info')
+    const dock = screen.getByTestId('player-controls')
+    const root = info.parentElement as HTMLElement
+    const coverFrame = info.firstElementChild as HTMLElement
+
+    // Row, and without the 15rem floor that would otherwise force the shell to scroll.
+    expect(root.className).toContain('short:flex-row')
+    expect(root.className).toContain('short:min-h-0')
+    // Side by side, so neither is stacked below the other.
+    expect(info.className).toContain('short:w-1/2')
+    expect(dock.className).toContain('short:w-1/2')
+    // With no dock beneath it, the cover takes the column's remaining height instead of a dvh cap.
+    expect(coverFrame.className).toContain('short:flex-1')
+    expect(coverFrame.className).toContain('short:min-h-0')
+    // Still siblings, still in the same order: the portrait contract above is unchanged.
+    expect(Array.from(root.children)).toEqual([info, dock])
+  })
+
   it('keeps an error and its Retry button inside the dock so both stay on screen together', async () => {
     renderPlayer()
     await settleLoaded()

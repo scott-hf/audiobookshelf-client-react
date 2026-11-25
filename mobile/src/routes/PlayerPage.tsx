@@ -115,22 +115,29 @@ export default function PlayerPage() {
     // transport controls are therefore on screen at first paint at any height that fits the dock;
     // only below `min-h-[15rem]` does the shell's own scroll area take over, so nothing is clipped.
     // The shell (App.tsx) already keeps this area above AppTabBar and the safe-area insets.
-    <div className="flex h-full min-h-[15rem] flex-col items-center">
-      <div data-testid="player-info" className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overscroll-contain">
+    //
+    // `short:` (see theme/index.css) turns that single column into two side by side. Stacking
+    // cover, title and dock needs more height than a phone in landscape has: measured on device,
+    // the speed/sleep row sat behind the tab bar until you scrolled 161px, and the cover was
+    // squeezed to a ~100px sliver. Side by side halves the height the stack needs, so the whole
+    // dock fits without scrolling and the cover gets the full column height instead.
+    <div className="flex h-full min-h-[15rem] flex-col items-center short:min-h-0 short:flex-row short:items-stretch short:gap-4">
+      <div data-testid="player-info" className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overscroll-contain short:w-1/2 short:justify-center">
         {/* Height is capped by the viewport, not the width: the old `w-full max-w-xs` + 2:3 aspect
             made a 480px-tall cover that alone pushed Pause off-screen. `w-auto` on the cover lets
-            the aspect ratio derive the width from this height. */}
-        <div className="flex h-[min(40dvh,18rem)] w-full shrink-0 justify-center pt-1">
+            the aspect ratio derive the width from this height. Side by side there is no dock below
+            it, so the cover simply takes what is left of the column. */}
+        <div className="flex h-[min(40dvh,18rem)] w-full shrink-0 justify-center pt-1 short:h-auto short:min-h-0 short:flex-1 short:shrink">
           <BookCover title={title ?? 'Now playing'} authorName={authorName} coverUrl={coverUrl} className="h-full w-auto" />
         </div>
 
-        <div className="mt-4 w-full max-w-sm text-center">
+        <div className="mt-4 w-full max-w-sm shrink-0 text-center short:mt-2">
           {title && <h2 className="text-foreground text-lg leading-tight font-bold">{title}</h2>}
           {authorName && <p className="text-foreground-muted mt-0.5 text-sm">{authorName}</p>}
         </div>
       </div>
 
-      <div data-testid="player-controls" className="mt-3 w-full max-w-sm shrink-0">
+      <div data-testid="player-controls" className="mt-3 w-full max-w-sm shrink-0 short:mt-0 short:w-1/2 short:self-center">
         <p className="text-foreground-subdued mb-1 text-center text-xs" aria-live="polite">
           {statusLabel}
         </p>
