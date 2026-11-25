@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import { cacheServerProgress } from './offlineProgress'
-import { PlayerContextValue, PlayerProvider, usePlayer } from './PlayerProvider'
+import { OFFLINE_REPLAY_STARTUP_DELAY_MS, PlayerContextValue, PlayerProvider, usePlayer } from './PlayerProvider'
 
 // Force the native branch of PlayerProvider.play().
 vi.mock('@capacitor/core', () => ({
@@ -11,8 +11,15 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({})
 }))
 
+// Captures the `appStateChange` handler so a test can fire a return to the foreground.
+const appState = vi.hoisted(() => ({ handler: null as ((state: { isActive: boolean }) => void) | null }))
 vi.mock('@capacitor/app', () => ({
-  App: { addListener: vi.fn().mockResolvedValue({ remove: () => Promise.resolve() }) }
+  App: {
+    addListener: vi.fn((_event: string, handler: (state: { isActive: boolean }) => void) => {
+      appState.handler = handler
+      return Promise.resolve({ remove: () => Promise.resolve() })
+    })
+  }
 }))
 
 const nativePlugin = vi.hoisted(() => ({
@@ -262,5 +269,141 @@ describe('PlayerProvider offline resume', () => {
     })
 
     expect(screen.getByTestId('state')).toHaveTextContent('loading:500')
+  })
+})
+
+describe('PlayerProvider replays stranded offline progress without waiting for a play', () => {
+  const record = (currentTime: number, unsyncedTimeListened: number, extra: Record<string, unknown> = {}) => ({
+    currentTime,
+    duration: 3600,
+    unsyncedTimeListened,
+    updatedAt: 1,
+    ...extra
+  })
+
+  function seedAll(records: Record<string, ReturnType<typeof record>>): void {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
+  }
+
+  function storedAll(): Record<string, { currentTime: number; unsyncedTimeListened: number; source?: string }> {
+    return JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, { currentTime: number; unsyncedTimeListened: number; source?: string }>
+  }
+
+  /** The server's position per item when a session is opened for it. */
+  function sessions(positions: Record<string, number> = {}) {
+    return vi.fn(async (id: string) => ({ id: `sess-${id}`, currentTime: positions[id] ?? 0, audioTracks: [] }))
+  }
+
+  beforeEach(() => {
+    appState.handler = null
+    window.localStorage.clear()
+    for (const mock of Object.values(nativePlugin)) mock.mockReset()
+    nativePlugin.load.mockResolvedValue(undefined)
+    nativePlugin.play.mockResolvedValue(undefined)
+    nativePlugin.stop.mockResolvedValue(undefined)
+    nativePlugin.getState.mockResolvedValue({ status: 'idle', itemId: null, currentTime: 0, duration: 0, error: null, rate: 1, playWhenReady: false })
+    nativePlugin.addListener.mockResolvedValue({ remove: () => Promise.resolve() })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    window.localStorage.clear()
+  })
+
+  it('pushes every stranded book when the network returns, with nothing playing, and never a server-cache snapshot', async () => {
+    seedAll({
+      b1: record(3_700, 3_600),
+      b2: record(900, 120),
+      snapshot: record(843, 0, { source: 'server-cache' }),
+      behind: record(100, 40)
+    })
+    const startSession = sessions({ behind: 500 })
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    renderPlayer({ startSession, closeSession })
+
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+    })
+
+    await vi.waitFor(() => expect(storedAll().b1.unsyncedTimeListened).toBe(0))
+    expect(closeSession).toHaveBeenCalledWith('sess-b1', { currentTime: 3_700, timeListened: 3_600 })
+    expect(closeSession).toHaveBeenCalledWith('sess-b2', { currentTime: 900, timeListened: 120 })
+    expect(storedAll().b2.unsyncedTimeListened).toBe(0)
+    // The snapshot is never even asked about; the behind-the-server record is probed but sends no listening.
+    expect(startSession.mock.calls.map((call) => call[0]).sort()).toEqual(['b1', 'b2', 'behind'])
+    expect(closeSession).toHaveBeenCalledWith('sess-behind', { currentTime: 500, timeListened: 0 })
+    expect(storedAll().snapshot).toMatchObject({ currentTime: 843, unsyncedTimeListened: 0, source: 'server-cache' })
+
+    // A second reconnect finds nothing left: no double count.
+    const closesBefore = closeSession.mock.calls.length
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(closeSession.mock.calls.length).toBe(closesBefore)
+    expect(startSession).toHaveBeenCalledTimes(3)
+  })
+
+  it('also replays when the app returns to the foreground', async () => {
+    seedAll({ b2: record(900, 120) })
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    renderPlayer({ startSession: sessions(), closeSession })
+
+    await act(async () => {
+      appState.handler?.({ isActive: true })
+    })
+
+    await vi.waitFor(() => expect(closeSession).toHaveBeenCalledWith('sess-b2', { currentTime: 900, timeListened: 120 }))
+    expect(storedAll().b2.unsyncedTimeListened).toBe(0)
+  })
+
+  it('replays shortly after launch, not before, so a cold start with stranded progress catches up', async () => {
+    vi.useFakeTimers()
+    seedAll({ b2: record(900, 120) })
+    const startSession = sessions()
+    renderPlayer({ startSession, closeSession: vi.fn().mockResolvedValue(undefined) })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(OFFLINE_REPLAY_STARTUP_DELAY_MS - 1)
+    })
+    expect(startSession).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(startSession).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(storedAll().b2.unsyncedTimeListened).toBe(0))
+  })
+
+  it('leaves the book being played to its own sync, replays the others, and picks the book up once it is closed', async () => {
+    seedLocal({ currentTime: 3_700, unsyncedTimeListened: 3_600 })
+    let started = 0
+    const startSession = vi.fn(async (id: string) => ({ id: started++ === 0 ? 'srv-session' : `sess-${id}`, currentTime: 100, audioTracks: [] }))
+    const syncSession = vi.fn().mockResolvedValue(undefined)
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    renderPlayer({ startSession, syncSession, closeSession })
+
+    await act(async () => {
+      await player.play('b1') // its own replay at session start pushes the 3 600 s once
+    })
+    expect(syncSession).toHaveBeenCalledTimes(1)
+
+    // More listening for b1 lands in the store while it is loading/playing, and b2 is stranded too.
+    seedAll({ b1: record(3_800, 50), b2: record(900, 120) })
+    await act(async () => {
+      window.dispatchEvent(new Event('online'))
+    })
+    await vi.waitFor(() => expect(storedAll().b2.unsyncedTimeListened).toBe(0))
+
+    expect(startSession.mock.calls.map((call) => call[0])).toEqual(['b1', 'b2']) // no second session for b1
+    expect(storedAll().b1.unsyncedTimeListened).toBe(50)
+    expect(syncSession).toHaveBeenCalledTimes(1)
+
+    // Closing releases it: it is no longer the live player's, so it is delivered.
+    await act(async () => {
+      await player.close()
+    })
+    await vi.waitFor(() => expect(closeSession).toHaveBeenCalledWith('sess-b1', { currentTime: 3_800, timeListened: 50 }))
+    expect(storedAll().b1.unsyncedTimeListened).toBe(0)
   })
 })

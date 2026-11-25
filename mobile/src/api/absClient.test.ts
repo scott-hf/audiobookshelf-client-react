@@ -62,6 +62,25 @@ describe('createAbsClient request timeout', () => {
 
     await expect(client.getLibraries()).rejects.toMatchObject({ status: 500, message: 'nope' })
   })
+
+  it('treats ABS\'s plain-text "OK" reply to session sync/close as success, not a JSON parse failure', async () => {
+    // ABS answers these with res.sendStatus(200), whose body is the text "OK". If that rejected, a
+    // push the server accepted would look failed and be sent again.
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response('OK', { status: 200 })))
+    const client = createAbsClient({ session, fetcher: fetcher as unknown as typeof fetch })
+
+    await expect(client.syncSession('s1', { currentTime: 5, timeListened: 5 })).resolves.toBeUndefined()
+    await expect(client.closeSession('s1', { currentTime: 5, timeListened: 5 })).resolves.toBeUndefined()
+    expect(String(fetcher.mock.calls[0][0])).toBe('https://books.test/api/session/s1/sync')
+    expect(String(fetcher.mock.calls[1][0])).toBe('https://books.test/api/session/s1/close')
+  })
+
+  it('still rejects a failing sync/close', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('gone', { status: 404 }))
+    const client = createAbsClient({ session, fetcher: fetcher as unknown as typeof fetch })
+
+    await expect(client.closeSession('s1', { currentTime: 5, timeListened: 5 })).rejects.toMatchObject({ status: 404 })
+  })
 })
 
 function jsonFetcher(body: unknown) {

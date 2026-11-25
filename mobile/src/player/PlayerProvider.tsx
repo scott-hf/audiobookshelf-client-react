@@ -10,11 +10,26 @@ import { createCastHandoffController, CastHandoffController, CastSessionSource }
 import { HtmlAudioPlayer } from './htmlAudioPlayer'
 import { createNativeAudioPlayer } from './nativeAudioPlayer'
 import { createNativeProgressSync, NativeProgressSync } from './nativeProgressSync'
-import { createOfflineProgressSync, localOfflineProgressStorage, replayUnsyncedOfflineProgress, resolveOfflineStartTime } from './offlineProgress'
+import type { StartSessionOptions } from '../api/absClient'
+import { createOfflineProgressReplayer, createOfflineProgressSync, localOfflineProgressStorage, replayUnsyncedOfflineProgress, resolveOfflineStartTime } from './offlineProgress'
 import { LocalTrack, parseLocalManifest, selectPlaybackSource } from './offlineSource'
 import { INITIAL_PLAYER_STATE, PlayerSnapshot, PlayerState } from './playerTypes'
 
 const DEVICE_ID = 'shelfdroid-android'
+/** What every playback session request (stream, offline-with-server, and the stranded-progress
+ * replay) tells ABS about this device. */
+const SESSION_START_OPTIONS: StartSessionOptions = {
+  deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
+  supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
+  mediaPlayer: 'exo',
+  forceTranscode: false,
+  forceDirectPlay: false
+}
+/** How long after launch (or login) the first stranded-progress replay waits, so it never competes
+ * with the screens' own first loads for the connection. */
+export const OFFLINE_REPLAY_STARTUP_DELAY_MS = 5_000
+/** Player states in which the live player is actively working on its item. */
+const ACTIVE_STATUSES: ReadonlySet<PlayerState['status']> = new Set<PlayerState['status']>(['loading', 'buffering', 'playing'])
 const DEFAULT_JUMP_FORWARD_SECONDS = 30
 const DEFAULT_JUMP_BACKWARD_SECONDS = 10
 /** A `loading` state (session start + native load) that outlasts this becomes an `error`, so a hung
@@ -83,7 +98,8 @@ export interface PlayerContextValue {
 export const PlayerContext = createContext<PlayerContextValue | null>(null)
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const { client } = useAuth()
+  const { client, state: authState } = useAuth()
+  const authenticated = authState.status === 'authenticated'
   // WI-1496 t800 Task 5: `DownloadProvider` is always an ancestor of `PlayerProvider` (see
   // App.tsx's provider nesting) -- reading `localItems` here, rather than requiring every `play()`
   // caller to look it up and pass it in, is what lets `play(itemId)` transparently choose offline
@@ -135,6 +151,41 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // `connectCast()` reads this instead of re-resolving a session, preserving the ONE ABS
   // session invariant.
   const castSourceRef = useRef<CastSessionSource | null>(null)
+
+  // Pushes progress listened offline for EVERY stranded item once the server is reachable, instead of
+  // waiting for each book to be played again (`startOfflineSession` still replays the item being
+  // opened). Native-only (the web path keeps no offline record) and only once signed in.
+  //
+  // The item the live player is working on is left out while it is playing/buffering/loading: its
+  // own progress sync is then the single writer. A merely paused item is fair game -- an offline
+  // session has no server sync, so without this the book listened to last would stay stranded for as
+  // long as it stays loaded. The shared per-item lock and the store-owned counter in
+  // `createOfflineProgressSync` cover the instant a play() overlaps a push.
+  const offlineReplayer = useMemo(
+    () =>
+      isNative && authenticated
+        ? createOfflineProgressReplayer(client, SESSION_START_OPTIONS, {
+            isItemActive: (libraryItemId) => itemIdRef.current === libraryItemId && ACTIVE_STATUSES.has(stateRef.current.status)
+          })
+        : null,
+    [client, isNative, authenticated]
+  )
+
+  // Triggers other than foreground (below): launch/login, after a short delay so it never competes
+  // with the first screens' loads, and the WebView's `online` event. Both are best-effort and
+  // `run()` never rejects. Only the throttled startup run respects the minimum interval; coming
+  // back online always gets a run, since an earlier attempt may have failed precisely because the
+  // network was down.
+  useEffect(() => {
+    if (!offlineReplayer) return
+    const startup = setTimeout(() => void offlineReplayer.run(), OFFLINE_REPLAY_STARTUP_DELAY_MS)
+    const onOnline = () => void offlineReplayer.run({ force: true })
+    window.addEventListener('online', onOnline)
+    return () => {
+      clearTimeout(startup)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [offlineReplayer])
 
   // Web path: HtmlAudioPlayer owns its own PlayerState and sync timer -- just relay it.
   useEffect(() => {
@@ -222,6 +273,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const listenerHandle = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       if (isActive) {
         void resyncFromNative()
+        // Back in the foreground is often when the network is back too (plane -> home Wi-Fi);
+        // throttled, silent, and a no-op when nothing is stranded.
+        void offlineReplayer?.run()
       } else {
         // flush() never rejects by contract; the catch is belt-and-braces for a future sync impl.
         void progressSyncRef.current?.flush().catch(() => undefined)
@@ -231,7 +285,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       cancelled = true
       void listenerHandle.then((handle) => handle.remove())
     }
-  }, [nativePlayer])
+  }, [nativePlayer, offlineReplayer])
 
   // WI-1496 t700 Task 4: pick up a session PlayerNotificationService restored from
   // PlaybackStateStore (process death / service recreation) instead of assuming idle on cold
@@ -306,8 +360,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
    * online) via the same `nativeProgressSync` plumbing the stream path uses -- but unlike the
    * stream path, a failure to reach the server (offline/airplane-mode, the whole point of offline
    * playback) is not fatal: playback proceeds unsynced, using the item id itself as a stable
-   * session identifier for the player's own state, and progress simply doesn't sync until the
-   * next time this item is opened with the server reachable.
+   * session identifier for the player's own state. Progress made that way is pushed by
+   * `offlineReplayer` once the server is reachable again (foreground / network back / launch), and
+   * also here, for this item, as soon as a session is obtained.
    *
    * `serverCurrentTime` is the position the server session reports, or null when it fell back to
    * unsynced (no server to ask). The caller combines it with the local offline record
@@ -316,13 +371,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
    * pushed up first (`replayUnsyncedOfflineProgress`; best-effort, never throws). */
   async function startOfflineSession(itemId: string): Promise<{ sessionId: string; sync: NativeProgressSync | null; serverCurrentTime: number | null }> {
     try {
-      const session = await client.startSession(itemId, {
-        deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
-        supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
-        mediaPlayer: 'exo',
-        forceTranscode: false,
-        forceDirectPlay: false
-      })
+      const session = await client.startSession(itemId, SESSION_START_OPTIONS)
       await replayUnsyncedOfflineProgress(client, session.id, itemId, session.currentTime)
       // Returned rather than assigned to progressSyncRef so the caller can drop it (closing the
       // session) if this play() attempt was superseded while the request was in flight.
@@ -412,13 +461,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           return
         }
 
-        const session = await client.startSession(itemId, {
-          deviceInfo: { clientName: 'ShelfDroid', deviceId: DEVICE_ID },
-          supportedMimeTypes: ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/flac', 'application/vnd.apple.mpegurl'],
-          mediaPlayer: 'exo',
-          forceTranscode: false,
-          forceDirectPlay: false
-        })
+        const session = await client.startSession(itemId, SESSION_START_OPTIONS)
         const sync = createNativeProgressSync(client, session.id)
         if (generation !== playGenerationRef.current) return await abandon(sync)
 
@@ -513,6 +556,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setActionError(null)
     if (nativePlayer) {
       await closeNative()
+      // The item just released was excluded from replays while it played; now it is not.
+      void offlineReplayer?.run({ force: true })
       return
     }
     await htmlPlayer?.close()
@@ -556,7 +601,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const value = useMemo<PlayerContextValue>(
     () => ({ state: visibleState, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer, connectCast, isCasting }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleState, stalled, rate, htmlPlayer, nativePlayer, castHandoff, client, localItems]
+    [visibleState, stalled, rate, htmlPlayer, nativePlayer, castHandoff, client, localItems, offlineReplayer]
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

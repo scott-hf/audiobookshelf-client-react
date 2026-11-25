@@ -1,4 +1,4 @@
-import type { AbsClient } from '../api/absClient'
+import { AbsApiError, type AbsClient, type StartSessionOptions } from '../api/absClient'
 import type { NativeProgressSync } from './nativeProgressSync'
 import type { PlayerSnapshot, PlayerStatus } from './playerTypes'
 
@@ -9,7 +9,9 @@ import type { PlayerSnapshot, PlayerStatus } from './playerTypes'
  * there is no ABS session -- so there is no `NativeProgressSync` and every second listened used to
  * be lost, with the next open restarting at 0:00. This module keeps a per-item record on the device
  * so (a) the next open resumes where the user left off and (b) progress made offline can be pushed
- * to the server once it is reachable again (`replayUnsyncedOfflineProgress`).
+ * to the server once it is reachable again: for EVERY stranded item when the app starts, returns to
+ * the foreground or the network comes back (`createOfflineProgressReplayer`), and for the item being
+ * opened as it starts (`replayUnsyncedOfflineProgress`).
  *
  * The record is written even while the server IS reachable. That is deliberate: it is what makes a
  * later offline resume work after a session that began online.
@@ -207,15 +209,194 @@ export async function replayUnsyncedOfflineProgress(
   serverCurrentTime: number,
   storage: OfflineProgressStorage = localOfflineProgressStorage
 ): Promise<boolean> {
+  let claimed = false
   try {
     const record = storage.read(libraryItemId)
-    if (!record || record.unsyncedTimeListened <= 0 || record.currentTime <= serverCurrentTime) return false
+    if (!isStranded(record) || record.currentTime <= serverCurrentTime) return false
+    // Another push (the all-items replayer) already owns this item: it will deliver the same
+    // listening, so doing it here too would count it twice.
+    if (itemsBeingReplayed.has(libraryItemId)) return false
+    itemsBeingReplayed.add(libraryItemId)
+    claimed = true
     await api.syncSession(sessionId, { currentTime: record.currentTime, timeListened: record.unsyncedTimeListened })
     const latest = storage.read(libraryItemId) ?? record
     storage.write(libraryItemId, { ...latest, unsyncedTimeListened: 0 })
     return true
   } catch {
     return false
+  } finally {
+    if (claimed) itemsBeingReplayed.delete(libraryItemId)
+  }
+}
+
+/** Items with a push in flight, shared by the per-item replay and the all-items replayer so two
+ * writers never push the same item's listening concurrently. */
+const itemsBeingReplayed = new Set<string>()
+
+/** True for a record that holds real, unreported listening. A `server-cache` snapshot is the
+ * server's own position, never listening, so it is excluded even if a corrupt record also carries a
+ * counter. */
+function isStranded(record: OfflineProgressRecord | null): record is OfflineProgressRecord {
+  return record !== null && record.source !== 'server-cache' && record.unsyncedTimeListened > 0
+}
+
+/** Minimum gap between the throttled (startup / foreground) replay runs. A network-return run
+ * bypasses it. There is deliberately no internal retry timer: a failed run waits for the next
+ * trigger, so a dead server is never polled in a loop. */
+export const OFFLINE_REPLAY_MIN_INTERVAL_MS = 30_000
+
+type StrandedOutcome = 'pushed' | 'settled' | 'skipped'
+
+/** A failure specific to one item (it was deleted from the server, access revoked) as opposed to the
+ * server being unreachable or the credentials being bad; the former must not block the other items. */
+function isPerItemFailure(error: unknown): boolean {
+  return error instanceof AbsApiError && error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 408 && error.status !== 429
+}
+
+/** Best-effort close of a session this module opened only to ask for the server's position. Reports
+ * the server's own position and no listening, so it changes nothing. Never throws. */
+async function closeProbeSession(api: Pick<AbsClient, 'closeSession'>, session: { id: string; currentTime: number }): Promise<void> {
+  try {
+    await api.closeSession(session.id, { currentTime: session.currentTime, timeListened: 0 })
+  } catch {
+    // An open session expires on the server; nothing else to do.
+  }
+}
+
+/** Reduces the stored counter by `reported` (the amount the server has now accepted or that no
+ * longer needs reporting), re-reading the record so a position written meanwhile is kept. A record
+ * removed meanwhile is not resurrected. */
+function subtractReported(storage: OfflineProgressStorage, libraryItemId: string, reported: number): void {
+  const latest = storage.read(libraryItemId)
+  if (latest) storage.write(libraryItemId, { ...latest, unsyncedTimeListened: Math.max(0, latest.unsyncedTimeListened - reported) })
+}
+
+/** Pushes one stranded item with NO pre-existing playback session.
+ *
+ * What the ABS client offers is session-scoped only (`startSession`, `syncSession`, `closeSession`;
+ * there is no per-item progress route in `AbsClient`), so this opens a short-lived session, which
+ * also tells us the server's current position (`session.currentTime`) -- needed to decide whether
+ * pushing would help or would rewind -- and then reports through `closeSession`. ABS applies the
+ * close payload as a final sync before closing, so the push and the clean-up are ONE request and no
+ * session is left open.
+ *
+ * Throws on any request failure (the caller classifies it); the stored counter is only touched after
+ * the server has accepted the close. */
+async function pushStrandedItem(
+  api: Pick<AbsClient, 'startSession' | 'closeSession'>,
+  startOptions: StartSessionOptions,
+  storage: OfflineProgressStorage,
+  isItemActive: (libraryItemId: string) => boolean,
+  libraryItemId: string
+): Promise<StrandedOutcome> {
+  if (itemsBeingReplayed.has(libraryItemId) || isItemActive(libraryItemId) || !isStranded(storage.read(libraryItemId))) return 'skipped'
+  itemsBeingReplayed.add(libraryItemId)
+  try {
+    const session = await api.startSession(libraryItemId, startOptions)
+
+    // Re-validate after the await: the user may have started playing this very item, or the record
+    // may have been pushed/cleared by someone else. The live player owns an active item.
+    const record = storage.read(libraryItemId)
+    if (!isStranded(record) || isItemActive(libraryItemId)) {
+      await closeProbeSession(api, session)
+      return 'skipped'
+    }
+
+    // The server is already at or past this position (another device listened further): nothing to
+    // correct, and sending a lower position would rewind it. The leftover counter can never be
+    // delivered usefully, so it is dropped; otherwise this item would open a session on every run.
+    if (record.currentTime <= session.currentTime) {
+      await closeProbeSession(api, session)
+      subtractReported(storage, libraryItemId, record.unsyncedTimeListened)
+      return 'settled'
+    }
+
+    await api.closeSession(session.id, { currentTime: record.currentTime, timeListened: record.unsyncedTimeListened })
+    subtractReported(storage, libraryItemId, record.unsyncedTimeListened)
+    return 'pushed'
+  } finally {
+    itemsBeingReplayed.delete(libraryItemId)
+  }
+}
+
+export interface ReplayAllOptions {
+  storage?: OfflineProgressStorage
+  /** True for an item the live player owns (loaded or about to load). Its own progress sync is the
+   * single writer for it, so it is left out of the replay. Re-checked after the session request. */
+  isItemActive?: (libraryItemId: string) => boolean
+}
+
+/** Pushes every stranded offline record to the server, one item at a time; best-effort, never
+ * throws. Resolves to the number of items whose listening the server accepted.
+ *
+ * Skips `server-cache` snapshots, items with nothing unsynced, and the active item. Stops at the
+ * first sign the server is unreachable (network error, timeout, 5xx, 401, 429) rather than waiting
+ * out a timeout per remaining item; a 4xx specific to one item (e.g. 404) skips just that item.
+ * Everything not pushed keeps its record untouched for the next run. */
+export async function replayAllUnsyncedOfflineProgress(
+  api: Pick<AbsClient, 'startSession' | 'closeSession'>,
+  startOptions: StartSessionOptions,
+  options: ReplayAllOptions = {}
+): Promise<number> {
+  let pushed = 0
+  try {
+    const storage = options.storage ?? localOfflineProgressStorage
+    const isItemActive = options.isItemActive ?? (() => false)
+    for (const { libraryItemId } of storage.listUnsynced()) {
+      try {
+        if ((await pushStrandedItem(api, startOptions, storage, isItemActive, libraryItemId)) === 'pushed') pushed++
+      } catch (error) {
+        if (!isPerItemFailure(error)) break
+      }
+    }
+  } catch {
+    // A replay must never surface into the UI.
+  }
+  return pushed
+}
+
+export interface OfflineProgressReplayerOptions extends ReplayAllOptions {
+  now?: () => number
+  minIntervalMs?: number
+}
+
+export interface OfflineProgressReplayer {
+  /** Replays all stranded records unless a run is already in flight (the same promise is returned)
+   * or, without `force`, the last run started less than `minIntervalMs` ago. `force` is for the
+   * network coming back, which must not be swallowed by an earlier failed attempt. Never rejects. */
+  run(options?: { force?: boolean }): Promise<number>
+}
+
+/** Single-flight, throttled front for `replayAllUnsyncedOfflineProgress`; the thing lifecycle
+ * triggers (startup, foreground, network-online) call. Does nothing, and costs no request, when no
+ * record has unsynced listening. */
+export function createOfflineProgressReplayer(
+  api: Pick<AbsClient, 'startSession' | 'closeSession'>,
+  startOptions: StartSessionOptions,
+  options: OfflineProgressReplayerOptions = {}
+): OfflineProgressReplayer {
+  const now = options.now ?? Date.now
+  const minIntervalMs = options.minIntervalMs ?? OFFLINE_REPLAY_MIN_INTERVAL_MS
+  const storage = options.storage ?? localOfflineProgressStorage
+  let inFlight: Promise<number> | null = null
+  let lastStartedAt: number | null = null
+
+  return {
+    run({ force = false } = {}) {
+      try {
+        if (inFlight) return inFlight
+        if (!force && lastStartedAt !== null && now() - lastStartedAt < minIntervalMs) return Promise.resolve(0)
+        if (storage.listUnsynced().length === 0) return Promise.resolve(0)
+        lastStartedAt = now()
+        const running = replayAllUnsyncedOfflineProgress(api, startOptions, options).finally(() => {
+          inFlight = null
+        })
+        inFlight = running
+        return running
+      } catch {
+        return Promise.resolve(0)
+      }
+    }
   }
 }
 
@@ -246,8 +427,11 @@ export function createOfflineProgressSync(libraryItemId: string, wrapped: Native
   const storage = options.storage ?? localOfflineProgressStorage
   const now = options.now ?? Date.now
 
-  // Carry forward anything left unsynced by an earlier offline session that has not been replayed.
-  let unsyncedTimeListened = storage.read(libraryItemId)?.unsyncedTimeListened ?? 0
+  // Listening accrued by THIS sync that is not in the store yet. The store, not this closure, owns
+  // the running total (whatever an earlier offline session left is already in it), so a replay that
+  // delivers and zeroes the stored counter while this item is loaded is respected instead of being
+  // overwritten by a stale in-memory copy -- which would report the same time a second time.
+  let pendingListened = 0
   let latest: { currentTime: number; duration: number } | null = null
   let latestStatus: PlayerStatus | null = null
   let lastWrittenAt: number | null = null
@@ -257,7 +441,11 @@ export function createOfflineProgressSync(libraryItemId: string, wrapped: Native
 
   function persist(at: number): void {
     if (!latest) return
-    storage.write(libraryItemId, { currentTime: latest.currentTime, duration: latest.duration, unsyncedTimeListened, updatedAt: at })
+    const stored = storage.read(libraryItemId)?.unsyncedTimeListened ?? 0
+    storage.write(libraryItemId, { currentTime: latest.currentTime, duration: latest.duration, unsyncedTimeListened: stored + pendingListened, updatedAt: at })
+    // `write` never throws and may silently drop (quota): only forget the pending time once it is
+    // seen to have landed, so a dropped write is retried by the next persist instead of lost.
+    if (pendingListened > 0 && storage.read(libraryItemId)?.updatedAt === at) pendingListened = 0
     lastWrittenAt = at
     lastWrittenStatus = latestStatus
   }
@@ -271,7 +459,7 @@ export function createOfflineProgressSync(libraryItemId: string, wrapped: Native
     // timer jitter between ticks.
     const elapsedSeconds = Math.max(0, (at - previous.at) / 1000)
     const rate = Number.isFinite(snapshot.rate) ? Math.max(snapshot.rate, 1) : 1
-    unsyncedTimeListened += Math.min(advanced, elapsedSeconds * rate + 1)
+    pendingListened += Math.min(advanced, elapsedSeconds * rate + 1)
   }
 
   return {

@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AbsClient } from '../api/absClient'
+import { AbsApiError, type AbsClient, type StartSessionOptions } from '../api/absClient'
 import type { NativeProgressSync } from './nativeProgressSync'
 import {
   cacheServerProgress,
   createLocalStorageOfflineProgress,
+  createOfflineProgressReplayer,
   createOfflineProgressSync,
   OFFLINE_PROGRESS_WRITE_INTERVAL_MS,
+  OFFLINE_REPLAY_MIN_INTERVAL_MS,
   OfflineProgressRecord,
   OfflineProgressStorage,
+  replayAllUnsyncedOfflineProgress,
   replayUnsyncedOfflineProgress,
   resolveOfflineStartTime
 } from './offlineProgress'
@@ -286,6 +289,324 @@ describe('replayUnsyncedOfflineProgress', () => {
 
     await expect(replayUnsyncedOfflineProgress(client, 's', 'b1', 0, store)).resolves.toBe(false)
     expect(store.read('b1')?.unsyncedTimeListened).toBe(60)
+  })
+})
+
+describe('replayAllUnsyncedOfflineProgress (no open session: every stranded item, on reconnect)', () => {
+  const START: StartSessionOptions = {
+    deviceInfo: { clientName: 'ShelfDroid', deviceId: 'd' },
+    supportedMimeTypes: [],
+    mediaPlayer: 'exo',
+    forceTranscode: false,
+    forceDirectPlay: false
+  }
+
+  /** `positions` is what the server reports per item when a session is started for it. */
+  function sessionApi(positions: Record<string, number> = {}) {
+    const startSession = vi.fn(async (id: string) => ({ id: `sess-${id}`, currentTime: positions[id] ?? 0, audioTracks: [] }))
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    return { startSession, closeSession, api: { startSession, closeSession } as unknown as Pick<AbsClient, 'startSession' | 'closeSession'> }
+  }
+
+  function stranded(store: OfflineProgressStorage, id: string, currentTime: number, unsyncedTimeListened: number): void {
+    store.write(id, record({ currentTime, unsyncedTimeListened }))
+  }
+
+  it('pushes every stranded record through its own short-lived session, then zeroes each counter', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 8_191, 25)
+    stranded(store, 'b2', 700, 600)
+    stranded(store, 'b3', 90, 80)
+    store.write('b4', record({ currentTime: 300, unsyncedTimeListened: 0 })) // nothing listened
+    const { api, startSession, closeSession } = sessionApi({ b1: 8_166, b2: 0, b3: 10 })
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(3)
+
+    expect(startSession.mock.calls.map((call) => call[0])).toEqual(['b1', 'b2', 'b3'])
+    expect(startSession).toHaveBeenCalledWith('b1', START)
+    expect(closeSession).toHaveBeenCalledTimes(3)
+    expect(closeSession).toHaveBeenCalledWith('sess-b1', { currentTime: 8_191, timeListened: 25 })
+    expect(closeSession).toHaveBeenCalledWith('sess-b2', { currentTime: 700, timeListened: 600 })
+    expect(closeSession).toHaveBeenCalledWith('sess-b3', { currentTime: 90, timeListened: 80 })
+    expect(store.listUnsynced()).toEqual([])
+    // Positions survive (they are what an offline resume reads); only the counters are zeroed.
+    expect(store.read('b1')).toEqual(record({ currentTime: 8_191, unsyncedTimeListened: 0 }))
+    expect(store.read('b4')).toEqual(record({ currentTime: 300 }))
+  })
+
+  it('never pushes a server-cache snapshot, even one that wrongly carries a counter', async () => {
+    const store = memoryStore()
+    cacheServerProgress('snapshot', 843, { storage: store })
+    store.write('corrupt', record({ currentTime: 900, unsyncedTimeListened: 50, source: 'server-cache' }))
+    const { api, startSession, closeSession } = sessionApi()
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(0)
+
+    expect(startSession).not.toHaveBeenCalled()
+    expect(closeSession).not.toHaveBeenCalled()
+    expect(store.read('snapshot')).toMatchObject({ currentTime: 843, unsyncedTimeListened: 0, source: 'server-cache' })
+    expect(store.read('corrupt')?.unsyncedTimeListened).toBe(50)
+  })
+
+  it('does not send a position at or behind the server, and stops reprobing it on every run', async () => {
+    const store = memoryStore()
+    stranded(store, 'equal', 500, 40)
+    stranded(store, 'behind', 400, 30)
+    stranded(store, 'ahead', 600, 60)
+    const { api, closeSession } = sessionApi({ equal: 500, behind: 900, ahead: 100 })
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(1)
+
+    // The only close that carries listening is the one for the item that is genuinely ahead; the
+    // other two sessions were opened to read the server position and closed reporting it unchanged.
+    expect(closeSession.mock.calls.filter((call) => (call[1] as { timeListened: number }).timeListened > 0)).toEqual([['sess-ahead', { currentTime: 600, timeListened: 60 }]])
+    expect(closeSession).toHaveBeenCalledWith('sess-equal', { currentTime: 500, timeListened: 0 })
+    expect(closeSession).toHaveBeenCalledWith('sess-behind', { currentTime: 900, timeListened: 0 })
+    expect(store.listUnsynced()).toEqual([])
+    // Local positions are untouched: a later offline resume still takes max(server, local).
+    expect(store.read('behind')?.currentTime).toBe(400)
+  })
+
+  it('leaves the counter intact when the server rejects the push, and delivers it on a later run', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 700, 600)
+    const { api, closeSession } = sessionApi()
+    closeSession.mockRejectedValueOnce(new Error('connection dropped'))
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(0)
+    expect(store.read('b1')?.unsyncedTimeListened).toBe(600)
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(1)
+    expect(store.read('b1')?.unsyncedTimeListened).toBe(0)
+  })
+
+  it('stops at the first sign the server is unreachable instead of timing out once per item', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 700, 60)
+    stranded(store, 'b2', 700, 60)
+    stranded(store, 'b3', 700, 60)
+    const { api, startSession } = sessionApi()
+    startSession.mockRejectedValue(new TypeError('Failed to fetch'))
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(0)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(store.listUnsynced()).toHaveLength(3)
+  })
+
+  it('skips an item the server rejects specifically (deleted, 404) and still delivers the rest', async () => {
+    const store = memoryStore()
+    stranded(store, 'gone', 700, 60)
+    stranded(store, 'b2', 700, 60)
+    const { api, startSession } = sessionApi()
+    startSession.mockImplementation(async (id: string) => {
+      if (id === 'gone') throw new AbsApiError(404, 'Not found')
+      return { id: `sess-${id}`, currentTime: 0, audioTracks: [] }
+    })
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(1)
+
+    expect(store.read('gone')?.unsyncedTimeListened).toBe(60)
+    expect(store.read('b2')?.unsyncedTimeListened).toBe(0)
+  })
+
+  it('treats 401, 408, 429 and 5xx as "the server cannot be used now" and stops, unlike a per-item 404', async () => {
+    for (const status of [401, 500, 408, 429]) {
+      const store = memoryStore()
+      stranded(store, 'b1', 700, 60)
+      stranded(store, 'b2', 700, 60)
+      const { api, startSession } = sessionApi()
+      startSession.mockRejectedValue(new AbsApiError(status, 'nope'))
+
+      await replayAllUnsyncedOfflineProgress(api, START, { storage: store })
+
+      expect(startSession).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('is idempotent: a second run reports nothing, so timeListened is never counted twice', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 700, 600)
+    stranded(store, 'b2', 90, 80)
+    const { api, closeSession, startSession } = sessionApi()
+
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(2)
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: store })).resolves.toBe(0)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(closeSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves the active item to the live player', async () => {
+    const store = memoryStore()
+    stranded(store, 'playing', 700, 60)
+    stranded(store, 'idle', 700, 60)
+    const { api, startSession, closeSession } = sessionApi()
+
+    await replayAllUnsyncedOfflineProgress(api, START, { storage: store, isItemActive: (id) => id === 'playing' })
+
+    expect(startSession.mock.calls.map((call) => call[0])).toEqual(['idle'])
+    expect(closeSession).toHaveBeenCalledTimes(1)
+    expect(store.read('playing')?.unsyncedTimeListened).toBe(60)
+  })
+
+  it('backs off when the item became active while its session request was in flight', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 700, 60)
+    const { closeSession } = sessionApi()
+    let active = false
+    const startSession = vi.fn(async (id: string) => {
+      active = true // the user pressed play on it during the request
+      return { id: `sess-${id}`, currentTime: 0, audioTracks: [] }
+    })
+
+    await expect(
+      replayAllUnsyncedOfflineProgress({ startSession, closeSession } as unknown as Pick<AbsClient, 'startSession' | 'closeSession'>, START, {
+        storage: store,
+        isItemActive: () => active
+      })
+    ).resolves.toBe(0)
+
+    expect(closeSession).toHaveBeenCalledTimes(1)
+    expect(closeSession).toHaveBeenCalledWith('sess-b1', { currentTime: 0, timeListened: 0 }) // the probe, reporting nothing
+    expect(store.read('b1')?.unsyncedTimeListened).toBe(60)
+  })
+
+  it('never lets the per-item replay and the all-items replay push the same item at once', async () => {
+    const store = memoryStore()
+    stranded(store, 'b1', 700, 60)
+    const { closeSession } = sessionApi()
+    let releaseSession: (() => void) | undefined
+    const startSession = vi.fn(
+      (id: string) =>
+        new Promise<{ id: string; currentTime: number; audioTracks: never[] }>((resolve) => {
+          releaseSession = () => resolve({ id: `sess-${id}`, currentTime: 0, audioTracks: [] })
+        })
+    )
+    const syncSession = vi.fn().mockResolvedValue(undefined)
+
+    const all = replayAllUnsyncedOfflineProgress({ startSession, closeSession } as unknown as Pick<AbsClient, 'startSession' | 'closeSession'>, START, { storage: store })
+    // Play of the same item opens its own session and tries to replay while the other is mid-flight.
+    await expect(replayUnsyncedOfflineProgress({ syncSession } as never, 'play-session', 'b1', 0, store)).resolves.toBe(false)
+    releaseSession?.()
+    await expect(all).resolves.toBe(1)
+
+    expect(syncSession).not.toHaveBeenCalled()
+    expect(closeSession).toHaveBeenCalledTimes(1)
+    expect(store.read('b1')?.unsyncedTimeListened).toBe(0)
+  })
+
+  it('never throws, even over an unavailable store', async () => {
+    const broken = createLocalStorageOfflineProgress(() => {
+      throw new Error('no storage')
+    })
+    const { api } = sessionApi()
+    await expect(replayAllUnsyncedOfflineProgress(api, START, { storage: broken })).resolves.toBe(0)
+  })
+})
+
+describe('createOfflineProgressReplayer', () => {
+  const START: StartSessionOptions = {
+    deviceInfo: { clientName: 'ShelfDroid', deviceId: 'd' },
+    supportedMimeTypes: [],
+    mediaPlayer: 'exo',
+    forceTranscode: false,
+    forceDirectPlay: false
+  }
+
+  function setup() {
+    const store = memoryStore()
+    store.write('b1', record({ currentTime: 700, unsyncedTimeListened: 60 }))
+    const startSession = vi.fn(async (id: string) => ({ id: `sess-${id}`, currentTime: 0, audioTracks: [] }))
+    const closeSession = vi.fn().mockResolvedValue(undefined)
+    let clock = 1_000_000
+    const replayer = createOfflineProgressReplayer({ startSession, closeSession } as unknown as Pick<AbsClient, 'startSession' | 'closeSession'>, START, {
+      storage: store,
+      now: () => clock
+    })
+    return { store, startSession, closeSession, replayer, advance: (ms: number) => void (clock += ms) }
+  }
+
+  it('is single-flight: overlapping triggers share one run', async () => {
+    const { replayer, startSession } = setup()
+    const first = replayer.run()
+    const second = replayer.run({ force: true })
+    await expect(Promise.all([first, second])).resolves.toEqual([1, 1])
+    expect(startSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('throttles foreground-style runs but always lets a network-return run through', async () => {
+    const { replayer, store, startSession, advance } = setup()
+    startSession.mockRejectedValueOnce(new TypeError('Failed to fetch')) // first attempt: still offline
+    await expect(replayer.run()).resolves.toBe(0)
+    expect(store.listUnsynced()).toHaveLength(1)
+
+    // Another foreground a moment later is throttled: no request at all, and no timer retrying.
+    advance(OFFLINE_REPLAY_MIN_INTERVAL_MS - 1)
+    await expect(replayer.run()).resolves.toBe(0)
+    expect(startSession).toHaveBeenCalledTimes(1)
+
+    // The network coming back is not throttled, so the earlier failure cannot swallow it.
+    await expect(replayer.run({ force: true })).resolves.toBe(1)
+    expect(startSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs again once the minimum interval has passed', async () => {
+    const { replayer, store, startSession, advance } = setup()
+    startSession.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await replayer.run()
+    advance(OFFLINE_REPLAY_MIN_INTERVAL_MS)
+    await expect(replayer.run()).resolves.toBe(1)
+    expect(store.listUnsynced()).toEqual([])
+  })
+
+  it('makes no request when nothing is stranded, and does not burn the throttle doing so', async () => {
+    const { replayer, store, startSession } = setup()
+    store.write('b1', record({ currentTime: 700, unsyncedTimeListened: 0 }))
+    await expect(replayer.run()).resolves.toBe(0)
+    expect(startSession).not.toHaveBeenCalled()
+
+    store.write('b1', record({ currentTime: 700, unsyncedTimeListened: 60 }))
+    await expect(replayer.run()).resolves.toBe(1)
+  })
+})
+
+describe('createOfflineProgressSync: the store owns the unsynced counter', () => {
+  it('respects a replay that delivered and zeroed the counter while the item was loaded', async () => {
+    const backing = memoryStore()
+    backing.write('b1', record({ currentTime: 50, unsyncedTimeListened: 90 }))
+    let clock = 1_000_000
+    const sync = createOfflineProgressSync('b1', null, { storage: backing, now: () => clock })
+
+    sync.observe(snapshot({ currentTime: 100 }))
+    clock += 1_000
+    sync.observe(snapshot({ currentTime: 101 }))
+    // The all-items replay pushes the 90 s already stored and zeroes it.
+    backing.write('b1', { ...(backing.read('b1') as OfflineProgressRecord), unsyncedTimeListened: 0 })
+    await sync.close()
+
+    // Only the second listened since; the delivered 90 are not written back.
+    expect(backing.read('b1')?.unsyncedTimeListened).toBeCloseTo(1, 5)
+  })
+
+  it('does not lose accrued time when a write is silently dropped; the next persist retries it', async () => {
+    const backing = memoryStore()
+    let drop = true
+    const storage: OfflineProgressStorage = { ...backing, write: (id, rec) => (drop ? undefined : backing.write(id, rec)) }
+    let clock = 1_000_000
+    const sync = createOfflineProgressSync('b1', null, { storage, now: () => clock })
+
+    sync.observe(snapshot({ currentTime: 10 }))
+    clock += 1_000
+    sync.observe(snapshot({ currentTime: 11 }))
+    await sync.flush() // dropped
+    expect(backing.read('b1')).toBeNull()
+
+    drop = false
+    clock += 1_000
+    sync.observe(snapshot({ currentTime: 12 }))
+    await sync.close()
+    expect(backing.read('b1')?.unsyncedTimeListened).toBeCloseTo(2, 5)
   })
 })
 

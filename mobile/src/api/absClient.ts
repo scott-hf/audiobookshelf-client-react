@@ -96,7 +96,10 @@ export function createAbsClient(deps: AbsClientDeps) {
   const fetcher = deps.fetcher ?? fetch
   const session = deps.session
 
-  async function request<T>(path: string, init: RequestInit = {}, retried = false, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  /** `parseBody: false` is for endpoints whose reply is never read (`sync`/`close`): ABS answers
+   * those with `res.sendStatus(200)`, i.e. the plain text "OK", which `response.json()` rejects.
+   * Treating that as a failure made a push the server had accepted look like one that had not. */
+  async function request<T>(path: string, init: RequestInit = {}, retried = false, timeoutMs = REQUEST_TIMEOUT_MS, parseBody = true): Promise<T> {
     const serverUrl = session.getServerUrl()
     const accessToken = session.getAccessToken()
     if (!serverUrl || !accessToken) {
@@ -117,7 +120,7 @@ export function createAbsClient(deps: AbsClientDeps) {
       if (response.status === 401 && !retried) {
         const refreshed = await session.refresh()
         if (refreshed) {
-          return request<T>(path, init, true, timeoutMs)
+          return request<T>(path, init, true, timeoutMs, parseBody)
         }
       }
 
@@ -126,6 +129,7 @@ export function createAbsClient(deps: AbsClientDeps) {
         throw new AbsApiError(response.status, message || response.statusText)
       }
 
+      if (!parseBody) return undefined as T
       return (await response.json()) as T
     } catch (error) {
       // A timeout-driven abort surfaces as a DOMException named TimeoutError -- give callers (and
@@ -175,18 +179,32 @@ export function createAbsClient(deps: AbsClientDeps) {
       ),
 
     syncSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
-      request<void>(`/api/session/${encodeURIComponent(sessionId)}/sync`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
-      }),
+      request<void>(
+        `/api/session/${encodeURIComponent(sessionId)}/sync`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        },
+        false,
+        REQUEST_TIMEOUT_MS,
+        false
+      ),
 
+    /** Closes the session; when `body` carries progress the server applies it first (ABS runs a
+     * sync with the same payload before closing), so this is also a one-call "report and finish". */
     closeSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
-      request<void>(`/api/session/${encodeURIComponent(sessionId)}/close`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
-      }),
+      request<void>(
+        `/api/session/${encodeURIComponent(sessionId)}/close`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        },
+        false,
+        REQUEST_TIMEOUT_MS,
+        false
+      ),
 
     /** Appends the current access token as a query param for elements the WebView loads
      * directly (audio/cover <img>/<audio> src) rather than through fetch. */
