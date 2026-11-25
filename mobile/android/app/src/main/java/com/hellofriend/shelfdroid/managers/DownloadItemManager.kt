@@ -158,6 +158,9 @@ class DownloadItemManager(
             queue[item.id] = item
             listener.onItemUpdated(item)
         }
+        if (queue.isNotEmpty()) {
+            LOG.info("Restored ${queue.size} persisted download row(s): " + queue.values.joinToString { "${it.id}=${it.state}" })
+        }
         queue.values.toList().forEach { startNextParts(it) }
         notifyQueueChanged()
     }
@@ -250,6 +253,12 @@ class DownloadItemManager(
             repository.remove(id)
             return
         }
+        // Drop the persisted row BEFORE stopping anything: a process killed part-way through this
+        // method must not leave a row behind for `restoreQueue()` to pick back up. Everything
+        // below is cleanup that a restart can redo (or that `IncompleteDownloadCleanup` sweeps);
+        // the row is the only thing that can resurrect the transfer. `cancelledIds` is already
+        // set, so [isCancelled] stops any later write from re-creating it.
+        repository.remove(id)
         jobs.remove(finishJobKey(id))?.cancel()
         item.parts.forEach { part ->
             activeCalls.remove(part.id)?.cancel()
@@ -257,11 +266,29 @@ class DownloadItemManager(
             File(part.stagingPath).delete()
         }
         deleteCoverFiles(item)
-        repository.remove(id)
+        lastPersist.remove(id)
+        lastEmit.remove(id)
         item.state = "cancelled"
         listener.onItemUpdated(item)
         notifyQueueChanged()
+        LOG.info("Cancelled download $id (${item.parts.size} part(s))")
     }
+
+    /**
+     * True once [cancel] has been called for [itemId] and it has not been re-enqueued. Checked
+     * before every repository write and every state transition.
+     *
+     * A cancel cannot stop an in-flight transfer instantly: the coroutine is blocked inside
+     * OkHttp's read loop and only notices when the cancelled `Call` makes the next read throw --
+     * and anything already buffered is still delivered first. So one more `onProgress` (and with
+     * a fully buffered response, the rest of the transfer) can run after [cancel] has finished.
+     * `DbManager.saveDownload` is a read-modify-write that re-adds the row, so a single late
+     * persist silently re-creates the row [cancel] just removed. `cancelledIds` lives only in this
+     * process, so the next [restoreQueue] has no memory of the cancel and resumes the transfer to
+     * completion -- a cancelled 19h book (~547 MB) re-downloaded itself across an app relaunch on
+     * 2026-11-24, wasting the bandwidth and the storage the user had explicitly declined to spend.
+     */
+    private fun isCancelled(itemId: String): Boolean = cancelledIds.contains(itemId)
 
     /** Forgets everything about a downloaded (or partially downloaded) book: stops any transfer,
      * drops the in-memory and persisted queue rows (so a restart cannot resurrect it and a
@@ -307,6 +334,7 @@ class DownloadItemManager(
     }
 
     private fun startNextParts(item: DownloadItem) {
+        if (isCancelled(item.id)) return
         if (item.parts.isNotEmpty() && item.parts.all { it.completed }) {
             // An item already registered as complete (restored alongside its local row) needs no
             // second finish -- that would rewrite the local row and re-fire onItemComplete.
@@ -332,14 +360,22 @@ class DownloadItemManager(
             throw e
         } catch (e: Exception) {
             LOG.log(Level.WARNING, "Part ${part.id} failed unexpectedly", e)
-            if (!cancelledIds.contains(item.id)) failPart(item, part, e.message ?: "Download failed")
+            if (!isCancelled(item.id)) failPart(item, part, e.message ?: "Download failed")
         } finally {
             if (self != null) jobs.remove(part.id, self) else jobs.remove(part.id)
+            // Last line of defence, once this coroutine can no longer write anything: whatever it
+            // managed to persist or leave on disk before noticing the cancel is undone here, so a
+            // cancel is final even if a future write path forgets to check [isCancelled].
+            if (isCancelled(item.id)) {
+                runCatching { File(part.stagingPath).delete() }
+                runCatching { repository.remove(item.id) }
+                LOG.info("Swept cancelled part ${part.id} after its transfer stopped")
+            }
         }
     }
 
     private suspend fun transferPartOnce(item: DownloadItem, part: DownloadItemPart) {
-        if (cancelledIds.contains(item.id)) return
+        if (isCancelled(item.id)) return
         if (!connectivity.isTransferAllowed()) {
             setWaitState(item, part, "waiting_for_network")
             return
@@ -349,7 +385,7 @@ class DownloadItemManager(
             setWaitState(item, part, "waiting_for_space")
             return
         }
-        if (cancelledIds.contains(item.id)) return
+        if (isCancelled(item.id)) return
 
         var token = tokenProvider(item.id)
         if (token.isNullOrBlank()) {
@@ -375,7 +411,7 @@ class DownloadItemManager(
             }
         }
 
-        if (cancelledIds.contains(item.id)) {
+        if (isCancelled(item.id)) {
             // A cancel() landed while the transfer was in flight -- the call was already
             // asked to cancel via activeCalls, but the response may have raced it to
             // completion. Undo any file it managed to write instead of finalizing/failing
@@ -419,6 +455,7 @@ class DownloadItemManager(
     }
 
     private fun completePart(item: DownloadItem, part: DownloadItemPart, bytes: Long, contentLength: Long, sizeVerified: Boolean = true) {
+        if (isCancelled(item.id)) return
         val staging = File(part.stagingPath)
         val final = File(part.finalDestinationPath)
         val onDisk = if (staging.exists()) staging.length() else -1L
@@ -451,6 +488,9 @@ class DownloadItemManager(
     }
 
     private fun failPart(item: DownloadItem, part: DownloadItemPart, message: String) {
+        // A cancelled item has no failure to report: persisting one would re-create the row and
+        // emitting `downloadFailed` would put the entry back in the React queue.
+        if (isCancelled(item.id)) return
         part.failed = true
         part.state = "failed"
         part.retryCount += 1
@@ -463,6 +503,7 @@ class DownloadItemManager(
     }
 
     private fun setWaitState(item: DownloadItem, part: DownloadItemPart, state: String) {
+        if (isCancelled(item.id)) return
         val unchanged = part.state == state && item.state == state
         part.state = state
         if (item.parts.none { it.state == "running" }) item.state = state
@@ -487,7 +528,7 @@ class DownloadItemManager(
             val self = currentCoroutineContext()[Job]
             try {
                 fetchCover(item)
-                if (cancelledIds.contains(item.id)) deleteCoverFiles(item) else finishItem(item)
+                if (isCancelled(item.id)) deleteCoverFiles(item) else finishItem(item)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -553,6 +594,9 @@ class DownloadItemManager(
     private fun finishJobKey(itemId: String) = "$itemId#finish"
 
     private fun finishItem(item: DownloadItem) {
+        // Registering a cancelled book would write a local library row (putting it in the Offline
+        // Library) and fire `downloadComplete`.
+        if (isCancelled(item.id)) return
         item.state = "complete"
         item.error = null
         item.terminalFailureAt = null
@@ -592,6 +636,8 @@ class DownloadItemManager(
     private fun emitProgressThrottled(item: DownloadItem) {
         val now = System.currentTimeMillis()
         if (now - (lastEmit[item.id] ?: 0L) < PROGRESS_EMIT_INTERVAL_MS) return
+        // A late progress event would put a cancelled entry straight back into the React queue.
+        if (isCancelled(item.id)) return
         lastEmit[item.id] = now
         refreshAggregates(item)
         listener.onItemUpdated(item)
@@ -626,8 +672,10 @@ class DownloadItemManager(
         return manifest.toString()
     }
 
+    /** The only place a queue row is written. Refuses a cancelled item (see [isCancelled]). */
     private fun persist(item: DownloadItem, force: Boolean = false) {
         if (!force) return persistThrottled(item)
+        if (isCancelled(item.id)) return
         lastPersist[item.id] = System.currentTimeMillis()
         repository.save(item)
     }
@@ -635,6 +683,7 @@ class DownloadItemManager(
     private fun persistThrottled(item: DownloadItem) {
         val now = System.currentTimeMillis()
         if (now - (lastPersist[item.id] ?: 0L) < PERSIST_INTERVAL_MS) return
+        if (isCancelled(item.id)) return
         lastPersist[item.id] = now
         repository.save(item)
     }

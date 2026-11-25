@@ -5,6 +5,7 @@ import com.hellofriend.shelfdroid.models.DownloadItem
 import com.hellofriend.shelfdroid.models.DownloadItemPart
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
@@ -593,5 +594,85 @@ class DownloadItemManagerTest {
         assertFalse(cover.exists())
         assertFalse(File(p.finalDestinationPath).exists())
         assertTrue(repository.localItems.isEmpty())
+    }
+
+    // ---- A cancel must stay cancelled, including across a process restart ----
+
+    /**
+     * Regression: a cancelled download resumed itself on the next app launch and ran to completion
+     * (a 19h book, ~547 MB, on 2026-11-24 -- cancelled at 21:38:57, complete at 21:47:29 after a
+     * relaunch).
+     *
+     * `cancel()` removes the persisted row, but the transfer coroutine it just cancelled is
+     * blocking inside OkHttp's read loop and does not notice immediately: it still has the chunk
+     * it read before the socket was closed, writes it, and calls `onProgress` -> `persistThrottled`
+     * -> `repository.save(item)`. Because `DbManager.saveDownload` is a read-modify-write that
+     * re-adds the row, that single late persist re-creates it. `cancelledIds` lives only in this
+     * process, so the next `restoreQueue()` has no memory of the cancel and resumes the transfer.
+     *
+     * The disk-space policy is the synchronisation seam here: `InternalDownloadManager` polls it
+     * between chunks, which is exactly the point in the write loop where a real cancel lands.
+     */
+    @Test
+    fun aCancelThatRacesAnInFlightProgressPersistStaysCancelledAcrossARestart() = runTest {
+        val dbDir = File(tempDir, "db")
+        val realRepository = DbManagerDownloadRepository(DbManager(dbDir))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(okio.Buffer().write(ByteArray(1024 * 1024))))
+
+        val p = part("p1", contentLength = (1024 * 1024).toLong())
+        val cancelled = java.util.concurrent.CountDownLatch(1)
+        val chunkPolls = java.util.concurrent.atomic.AtomicInteger(0)
+        val managerRef = java.util.concurrent.atomic.AtomicReference<DownloadItemManager>()
+        val diskSpace = DiskSpacePolicy {
+            // Poll 1 is `transferPartOnce`'s pre-flight check; later polls are between chunks.
+            if (chunkPolls.incrementAndGet() == 4) {
+                Thread {
+                    managerRef.get().cancel("item-1")
+                    cancelled.countDown()
+                }.start()
+                cancelled.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                // Let the progress-persist throttle expire so the next `onProgress` really writes,
+                // making the (otherwise ~millisecond-wide) field race deterministic.
+                Thread.sleep(700)
+            }
+            true
+        }
+        // The manager's own scope, so the test can join the transfer coroutine: `awaitIdle()` is
+        // useless here because `cancel()` drops the job from `jobs` while it is still running.
+        val transferScope = CoroutineScope(SupervisorJob())
+        val manager = DownloadItemManager(
+            repository = realRepository,
+            httpClient = client,
+            tokenProvider = { "token-1" },
+            refreshToken = { "token-1" },
+            diskSpace = diskSpace,
+            scope = transferScope
+        )
+        managerRef.set(manager)
+
+        manager.enqueue(item(p))
+        cancelled.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        transferScope.coroutineContext[Job]!!.children.toList().forEach { it.join() }
+
+        assertTrue("a cancelled item must leave no persisted queue row", realRepository.downloads().isEmpty())
+        assertFalse("a cancelled item must leave no staging file", File(p.stagingPath).exists())
+
+        // The user-visible consequence: a fresh process (empty `cancelledIds`) must not pick the
+        // transfer back up. Nothing more is enqueued on the server, so a resumed transfer would
+        // fail the request-count assertion even if the row somehow survived.
+        val requestsBeforeRestart = server.requestCount
+        val restarted = DownloadItemManager(
+            repository = realRepository,
+            httpClient = client,
+            tokenProvider = { "token-1" },
+            refreshToken = { "token-1" },
+            scope = CoroutineScope(SupervisorJob())
+        )
+        restarted.restoreQueue()
+        restarted.awaitIdle()
+
+        assertTrue("a relaunch must not resurrect a cancelled download", restarted.listQueue().isEmpty())
+        assertEquals("a relaunch must not re-request a cancelled download", requestsBeforeRestart, server.requestCount)
+        assertFalse(File(p.finalDestinationPath).exists())
     }
 }
