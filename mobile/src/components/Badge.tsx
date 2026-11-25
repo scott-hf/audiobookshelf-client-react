@@ -1,10 +1,19 @@
 import { mergeClasses } from '@/lib/merge-classes'
 
-type BadgeTone = 'neutral' | 'success' | 'error' | 'info' | 'warning'
+/**
+ * `success-solid` is for a badge laid OVER artwork (a book cover). The other tones are 20% tints
+ * of the status colour, which only read against a flat app surface: over an arbitrary cover a tint
+ * has no guaranteed contrast. This one is opaque with dark text (about 6.8:1, `bg-success` against
+ * `text-black-600`, WCAG AA) so the text's contrast is its own backing's and does not depend on
+ * the picture underneath. The `ring` keeps the chip's edge visible over a cover that happens to be
+ * the same green.
+ */
+type BadgeTone = 'neutral' | 'success' | 'success-solid' | 'error' | 'info' | 'warning'
 
 const TONE_CLASSES: Record<BadgeTone, string> = {
   neutral: 'bg-black-300 text-foreground-muted',
   success: 'bg-success/20 text-success',
+  'success-solid': 'bg-success text-black-600 ring-1 ring-black-600',
   error: 'bg-error/20 text-error',
   info: 'bg-info/20 text-info',
   warning: 'bg-warning/20 text-warning'
