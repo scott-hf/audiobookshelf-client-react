@@ -1,4 +1,14 @@
-import type { GetLibraryItemsResponse, AbsLibrary, AbsLibraryItem, AbsPlaybackSession, GetLibrariesResponse } from '../types/abs'
+import type {
+  AbsFilterData,
+  AbsLibrary,
+  AbsLibraryItem,
+  AbsPlaybackSession,
+  AbsUser,
+  GetLibrariesResponse,
+  GetLibraryItemsOptions,
+  GetLibraryItemsResponse,
+  GetLibraryPersonalizedResponse
+} from '../types/abs'
 import type { SessionStore } from '../auth/session'
 
 export class AbsApiError extends Error {
@@ -30,6 +40,36 @@ function mergeSignals(first: AbortSignal, second: AbortSignal): AbortSignal {
     second.addEventListener('abort', abort(second), { once: true })
   }
   return controller.signal
+}
+
+/** Page size for `getLibraryItems` when the caller doesn't pick one. 48 divides evenly into both
+ * the 3-column and 4-column cover grids, so a full page never leaves a ragged last row. */
+export const DEFAULT_LIBRARY_PAGE_SIZE = 48
+
+/** Per-shelf cap for `getLibraryPersonalized`; the server's own default. */
+export const DEFAULT_SHELF_LIMIT = 10
+
+/**
+ * Builds the query string for `GET /api/libraries/:id/items`.
+ *
+ * `filter` is appended verbatim because `filterUtils` already URL-encodes its value half;
+ * encoding it again would turn the base64 `=` padding into `%253D` and the server would decode it
+ * to the wrong value.
+ *
+ * `collapseseries` is deliberately dropped whenever a `filter` is present. On ABS 2.35.1 the two
+ * combined return inconsistent rows (a filtered-out book can still surface through its series
+ * wrapper, and `total` stops matching `results`); the fixes landed in commits after that release.
+ * Filter wins because a filtered view is an explicit user request and collapse is a presentation
+ * nicety. Revisit once the minimum supported server version includes the fix.
+ */
+export function buildLibraryItemsQuery(options: GetLibraryItemsOptions = {}): string {
+  const { page = 0, limit = DEFAULT_LIBRARY_PAGE_SIZE, sort = 'media.metadata.title', desc = false, filter, collapseseries = false, minified = true } = options
+  const params = [`limit=${limit}`, `page=${page}`, `sort=${encodeURIComponent(sort)}`]
+  if (desc) params.push('desc=1')
+  if (filter) params.push(`filter=${filter}`)
+  if (collapseseries && !filter) params.push('collapseseries=1')
+  if (minified) params.push('minified=1')
+  return params.join('&')
 }
 
 export interface AbsClientDeps {
@@ -100,8 +140,25 @@ export function createAbsClient(deps: AbsClientDeps) {
   return {
     getLibraries: () => request<GetLibrariesResponse>('/api/libraries'),
 
-    getLibraryItems: (libraryId: string, page = 0) =>
-      request<GetLibraryItemsResponse>(`/api/libraries/${encodeURIComponent(libraryId)}/items?limit=30&page=${page}&sort=media.metadata.title`),
+    /** The current user, including `mediaProgress` -- the ONLY source of per-item progress for list
+     * screens (list/personalized endpoints never attach it). Index it with `buildProgressMap`. */
+    getMe: () => request<AbsUser>('/api/me'),
+
+    /** One page of a library. `total` is the match count across all pages, so a caller can tell
+     * whether more remain: `(page + 1) * limit < total`. Defaults: page 0, 48 per page, title
+     * ascending, minified. See [buildLibraryItemsQuery] for the filter/collapse rule. */
+    getLibraryItems: (libraryId: string, options: GetLibraryItemsOptions = {}, signal?: AbortSignal) =>
+      request<GetLibraryItemsResponse>(`/api/libraries/${encodeURIComponent(libraryId)}/items?${buildLibraryItemsQuery(options)}`, { signal }),
+
+    /** The home shelves, passed through as the server sends them (set and order vary by library
+     * contents and server version -- render by `type`, skip unknown). `include=rssfeed,share` only
+     * adds fields to entities. Order with `orderShelvesHistoryFirst` to put history shelves first. */
+    getLibraryPersonalized: (libraryId: string, limit = DEFAULT_SHELF_LIMIT, signal?: AbortSignal) =>
+      request<GetLibraryPersonalizedResponse>(`/api/libraries/${encodeURIComponent(libraryId)}/personalized?limit=${limit}&include=rssfeed,share`, { signal }),
+
+    /** Genres/tags/authors/series/etc. to filter by. The server caches this ~30 minutes, so values
+     * added recently may be missing (and stale ones present); treat it as a hint, not a source of truth. */
+    getFilterData: (libraryId: string, signal?: AbortSignal) => request<AbsFilterData>(`/api/libraries/${encodeURIComponent(libraryId)}/filterdata`, { signal }),
 
     getLibraryItem: (itemId: string) => request<AbsLibraryItem>(`/api/items/${encodeURIComponent(itemId)}?expanded=1&include=progress`),
 

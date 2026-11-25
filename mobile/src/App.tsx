@@ -8,12 +8,14 @@ import { AcquisitionProvider } from './contexts/AcquisitionContext'
 import { DownloadProvider } from './downloads/DownloadProvider'
 import { routeFromDeepLink } from './navigation/deepLinks'
 import { PlayerProvider } from './player/PlayerProvider'
+import { UserProgressProvider } from './progress/UserProgressProvider'
 import { SettingsProvider } from './settings/SettingsProvider'
 import AcquisitionQueuePage from './routes/AcquisitionQueuePage'
 import BookDetailsPage from './routes/BookDetailsPage'
 import DiscoverPage from './routes/DiscoverPage'
 import DownloadsPage from './routes/DownloadsPage'
 import LibrariesPage from './routes/LibrariesPage'
+import LibraryHomePage from './routes/LibraryHomePage'
 import LibraryPage from './routes/LibraryPage'
 import LoginPage from './routes/LoginPage'
 import PlayerPage from './routes/PlayerPage'
@@ -64,6 +66,8 @@ function AuthenticatedApp() {
           the Wi-Fi-only preference to the native downloader, so under the old order a toggle
           while downloads were parked only reached native on the next enqueue or app restart. */}
       <SettingsProvider>
+        {/* Fetches /api/me once so list screens can resolve progress; see progress/UserProgressProvider. */}
+        <UserProgressProvider>
         <DownloadProvider>
           <PlayerProvider>
             <div className="flex min-h-0 flex-1 flex-col">
@@ -71,7 +75,10 @@ function AuthenticatedApp() {
             <Routes>
               <Route path="/" element={<Navigate to="/libraries" replace />} />
               <Route path="/libraries" element={<LibrariesPage />} />
-              <Route path="/library/:libraryId" element={<LibraryPage />} />
+              {/* The landing view is the personalized home (history shelves first); the flat,
+                  paginated catalogue moved to `/books`, reached from the home's "All books" link. */}
+              <Route path="/library/:libraryId" element={<LibraryHomePage />} />
+              <Route path="/library/:libraryId/books" element={<LibraryPage />} />
               <Route path="/library/:libraryId/discover" element={<DiscoverPage />} />
               <Route path="/library/:libraryId/acquisition-queue" element={<AcquisitionQueuePage />} />
               <Route path="/library/:libraryId/item/:itemId" element={<BookDetailsPage />} />
@@ -92,6 +99,7 @@ function AuthenticatedApp() {
             </div>
           </PlayerProvider>
         </DownloadProvider>
+        </UserProgressProvider>
       </SettingsProvider>
     </AcquisitionProvider>
   )
@@ -99,7 +107,7 @@ function AuthenticatedApp() {
 
 function AppBody() {
   const { state } = useAuth()
-  if (state.status === 'unknown') return <LoadingView label="Starting ShelfDroid…" />
+  if (state.status === 'unknown') return <LoadingView label="Starting Audiobookshelf+…" />
   if (state.status === 'unauthenticated') return <LoginPage />
   return <AuthenticatedApp />
 }
@@ -115,7 +123,7 @@ export default function App() {
             style={{ paddingTop: 'var(--abs-safe-top)', height: 'calc(4rem + var(--abs-safe-top))' }}
           >
             <span className="abs-icons icon-audiobookshelf text-accent text-2xl" aria-hidden="true" />
-            <h1 className="text-foreground text-lg font-semibold tracking-wide">ShelfDroid</h1>
+            <h1 className="text-foreground text-lg font-semibold tracking-wide">Audiobookshelf+</h1>
           </header>
           <main className="flex min-h-0 flex-1 flex-col">
             <AppBody />

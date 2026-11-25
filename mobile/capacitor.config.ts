@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
 
 const config: CapacitorConfig = {
   appId: 'com.hellofriend.shelfdroid',
-  appName: 'ShelfDroid',
+  appName: 'Audiobookshelf+',
   webDir: 'dist',
   android: {
     allowMixedContent: false

@@ -13,6 +13,9 @@ export function withClientDefaults(client: Partial<AbsClient>): AbsClient {
     authorizedStreamUrl: (contentUrl: string) => `https://books.test${contentUrl}?token=test`,
     getServerUrl: () => 'https://books.test',
     getAccessToken: () => 'test-token',
+    // UserProgressProvider fetches /api/me on mount; an empty progress list keeps tests that don't
+    // care about progress from needing to stub it.
+    getMe: () => Promise.resolve({ id: 'user-1', username: 'tester', mediaProgress: [] }),
     ...client
   } as AbsClient
 }

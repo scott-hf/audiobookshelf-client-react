@@ -1,17 +1,22 @@
 import BookCover from './BookCover'
-import type { AbsLibraryItem } from '../types/abs'
+import type { AbsLibraryItem, AbsMediaProgress } from '../types/abs'
 
 interface BookCardProps {
   item: AbsLibraryItem
   onSelect: (item: AbsLibraryItem) => void
   coverUrl?: string | null
+  /** The user's progress for this item, resolved by the caller from `useUserProgress().getProgress`.
+   * List/personalized endpoints never populate `item.userMediaProgress`, so this is what actually
+   * drives the bar; the item field is only a fallback for expanded items that do carry it. */
+  progress?: AbsMediaProgress | null
 }
 
-export default function BookCard({ item, onSelect, coverUrl }: BookCardProps) {
+export default function BookCard({ item, onSelect, coverUrl, progress: progressProp }: BookCardProps) {
   const { title, authorName } = item.media.metadata
-  const progress = item.userMediaProgress?.progress ?? 0
+  const mediaProgress = progressProp ?? item.userMediaProgress
+  const progress = mediaProgress?.progress ?? 0
   const progressPercent = Math.round(progress * 100)
-  const isFinished = item.userMediaProgress?.isFinished ?? false
+  const isFinished = mediaProgress?.isFinished ?? false
 
   return (
     <button

@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import BookCover from '../components/BookCover'
 import LoadingView from '../components/LoadingView'
 import Btn from '../components/ui/Btn'
 import { useDownloads } from '../downloads/DownloadProvider'
 import { useTypeSafeTranslations } from '../hooks/useTypeSafeTranslations'
+import { libraryFilterPath } from '../lib/libraryQuery'
 import type { AbsLibraryItem } from '../types/abs'
 
 function formatDuration(seconds: number): string {
@@ -13,6 +14,22 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+}
+
+const metaLinkClass = 'hover:text-foreground underline-offset-2 hover:underline'
+
+/** Commas between inline links without a trailing one (a plain `join` can't hold elements). */
+function Separated({ children }: { children: ReactNode[] }) {
+  return (
+    <>
+      {children.map((child, index) => (
+        <Fragment key={index}>
+          {index > 0 && ', '}
+          {child}
+        </Fragment>
+      ))}
+    </>
+  )
 }
 
 export default function BookDetailsPage() {
@@ -57,6 +74,15 @@ export default function BookDetailsPage() {
   const alreadyLocal = isLocal(itemId)
   const downloadDisabled = downloading || alreadyLocal || (queuedEntry !== undefined && queuedEntry.state !== 'failed')
   const coverUrl = client.authorizedStreamUrl(`/api/items/${encodeURIComponent(itemId)}/cover`)
+  // Each tappable value opens the library list narrowed to it, as the web client's item page does.
+  // Authors and series filter by entity ID (a name matches nothing); genres and narrators by name.
+  // When the expanded item lacks the structured list we show the plain display string un-linked
+  // rather than guess at splitting it, since a name containing a comma would filter to nothing.
+  const authors = metadata.authors ?? []
+  const seriesRefs = metadata.series ?? []
+  const narrators = metadata.narrators ?? []
+  const genres = metadata.genres ?? []
+  const hasDetailRows = seriesRefs.length > 0 || narrators.length > 0 || !!metadata.narratorName || genres.length > 0
   const progressPercent = progress ? Math.round(progress.progress * 100) : 0
   const inProgress = !!progress && !progress.isFinished && progress.currentTime > 0
 
@@ -84,7 +110,19 @@ export default function BookDetailsPage() {
           <BookCover title={metadata.title} authorName={metadata.authorName} coverUrl={coverUrl} className="w-28 shrink-0" />
           <div className="flex min-w-0 flex-1 flex-col justify-end pb-1">
             <h2 className="text-foreground text-xl leading-tight font-bold">{metadata.title}</h2>
-            {metadata.authorName && <p className="text-foreground-muted mt-1 text-sm">{metadata.authorName}</p>}
+            {authors.length > 0 ? (
+              <p className="text-foreground-muted mt-1 text-sm">
+                <Separated>
+                  {authors.map((author) => (
+                    <Link key={author.id} to={libraryFilterPath(libraryId, 'authors', author.id, author.name)} className={metaLinkClass}>
+                      {author.name}
+                    </Link>
+                  ))}
+                </Separated>
+              </p>
+            ) : (
+              metadata.authorName && <p className="text-foreground-muted mt-1 text-sm">{metadata.authorName}</p>
+            )}
             {typeof duration === 'number' && (
               <p className="text-foreground-subdued mt-2 flex items-center gap-1 text-xs">
                 <span className="material-symbols text-sm" aria-hidden="true">
@@ -96,6 +134,64 @@ export default function BookDetailsPage() {
           </div>
         </div>
       </div>
+
+      {hasDetailRows && (
+        <dl className="mb-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm" data-testid="book-details-metadata">
+          {seriesRefs.length > 0 && (
+            <>
+              <dt className="text-foreground-subdued">{t('LabelSeries')}</dt>
+              <dd className="text-foreground-muted">
+                <Separated>
+                  {seriesRefs.map((series) => (
+                    <span key={series.id}>
+                      <Link to={libraryFilterPath(libraryId, 'series', series.id, series.name)} className={metaLinkClass}>
+                        {series.name}
+                      </Link>
+                      {series.sequence ? ` #${series.sequence}` : ''}
+                    </span>
+                  ))}
+                </Separated>
+              </dd>
+            </>
+          )}
+          {(narrators.length > 0 || metadata.narratorName) && (
+            <>
+              <dt className="text-foreground-subdued">{t('LabelNarrators')}</dt>
+              <dd className="text-foreground-muted">
+                {narrators.length > 0 ? (
+                  <Separated>
+                    {narrators.map((narrator) => (
+                      <Link key={narrator} to={libraryFilterPath(libraryId, 'narrators', narrator)} className={metaLinkClass}>
+                        {narrator}
+                      </Link>
+                    ))}
+                  </Separated>
+                ) : (
+                  metadata.narratorName
+                )}
+              </dd>
+            </>
+          )}
+          {genres.length > 0 && (
+            <>
+              <dt className="text-foreground-subdued">{t('LabelGenres')}</dt>
+              {/* Genre strings are shown and filtered verbatim: the server stores some multi-genre values
+                  as one comma-joined string, and that exact string is the filter key. */}
+              <dd className="flex flex-wrap gap-1.5">
+                {genres.map((genre) => (
+                  <Link
+                    key={genre}
+                    to={libraryFilterPath(libraryId, 'genres', genre)}
+                    className="bg-primary border-border text-foreground hover:bg-bg-hover rounded-full border px-2.5 py-0.5 text-xs"
+                  >
+                    {genre}
+                  </Link>
+                ))}
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
 
       {inProgress && (
         <div className="mb-4">

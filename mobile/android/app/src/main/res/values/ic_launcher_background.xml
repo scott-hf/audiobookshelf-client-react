@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Deliberately NOT the stock white: the native Kotlin ShelfDroid (dev.halim.shelfdroid)
+         ships a near-identical green-on-white glyph, and having two visually indistinguishable
+         launcher entries cost real debugging time. A dark background keeps the same foreground
+         glyph while making the two apps tellable apart at a glance in the launcher, the recents
+         switcher and the notification shade. One line to change if you want a different colour. -->
+    <color name="ic_launcher_background">#0F2A3F</color>
 </resources>

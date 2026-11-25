@@ -6,7 +6,7 @@ import App from './App'
 describe('App', () => {
   it('renders the local mobile shell without a remote server URL', () => {
     render(<App />)
-    expect(screen.getByRole('heading', { name: 'ShelfDroid' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Audiobookshelf+' })).toBeInTheDocument()
     expect(capacitorConfig.server?.url).toBeUndefined()
     expect(capacitorConfig.webDir).toBe('dist')
   })
