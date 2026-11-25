@@ -138,7 +138,19 @@ export class SessionStore {
   }
 
   /** One silent refresh attempt. Never throws -- callers treat a `false` return as "the
-   * caller's original 401 stands", matching the web app's refresh-then-retry-once contract. */
+   * caller's original 401 stands", matching the web app's refresh-then-retry-once contract.
+   *
+   * A refresh the server definitively REJECTS also clears the stored session, dropping the app to
+   * the login screen. Without that the app sat in `authenticated` with a token the server would
+   * never honour again, showing "Could not load libraries." on every screen with no way back in
+   * except finding Log out by hand -- observed after a server database restore rolled back the
+   * `sessions` table ("[TokenManager] Failed to refresh token. Session not found"), and it would
+   * recur whenever a session is revoked server-side or expires past the refresh window.
+   *
+   * A transport failure is deliberately NOT treated that way: being offline, or a server that is
+   * down or returning 5xx, says nothing about whether the session is still valid, and signing the
+   * user out would take their downloaded books offline with them. Only an answer from the server
+   * that the credentials themselves are no good counts. */
   async refresh(): Promise<boolean> {
     if (!this.current) return false
     const { serverUrl, refreshToken } = this.current
@@ -147,7 +159,10 @@ export class SessionStore {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-refresh-token': refreshToken }
       })
-      if (!response.ok) return false
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403 || response.status === 404) await this.logout()
+        return false
+      }
       const data = await checkedJson<AbsRefreshResponse>(response)
       await this.persist({
         serverUrl,

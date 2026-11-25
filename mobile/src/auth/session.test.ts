@@ -70,6 +70,39 @@ describe('SessionStore', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
+  // A server restore rolled back the `sessions` table, so the phone's refresh token no longer
+  // existed ("[TokenManager] Failed to refresh token. Session not found"). The app stayed
+  // `authenticated` with a token the server would never honour and showed "Could not load
+  // libraries." on every screen, with no route back in but finding Log out by hand.
+  it('signs out when the server definitively rejects the refresh token', async () => {
+    fetcher.mockResolvedValueOnce(json(loginResponse)).mockResolvedValueOnce(new Response('', { status: 404 }))
+
+    const session = new SessionStore({ vault, fetcher: fetcher as unknown as typeof fetch })
+    await session.login('https://books.test', 'scott', 'password')
+    expect(session.getState().status).toBe('authenticated')
+
+    await expect(session.refresh()).resolves.toBe(false)
+    expect(session.getState()).toEqual({ status: 'unauthenticated', serverUrl: null })
+    expect(vault.clear).toHaveBeenCalledTimes(1)
+  })
+
+  // The opposite case, and the one that must not sign anyone out: offline, or the server down.
+  // Nothing has been learned about the session, and signing out would take the downloaded books
+  // offline with the user.
+  it.each([
+    ['a network failure', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['a server error', () => Promise.resolve(new Response('', { status: 503 }))]
+  ])('keeps the session through %s', async (_label, outcome) => {
+    fetcher.mockResolvedValueOnce(json(loginResponse)).mockImplementationOnce(outcome)
+
+    const session = new SessionStore({ vault, fetcher: fetcher as unknown as typeof fetch })
+    await session.login('https://books.test', 'scott', 'password')
+
+    await expect(session.refresh()).resolves.toBe(false)
+    expect(session.getState()).toEqual({ status: 'authenticated', serverUrl: 'https://books.test' })
+    expect(vault.clear).not.toHaveBeenCalled()
+  })
+
   it('clears the vault and session state on logout', async () => {
     fetcher.mockResolvedValueOnce(json(loginResponse))
     const session = new SessionStore({ vault, fetcher: fetcher as unknown as typeof fetch })
