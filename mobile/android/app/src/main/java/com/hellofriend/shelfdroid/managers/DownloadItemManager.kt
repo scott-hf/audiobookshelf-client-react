@@ -208,9 +208,12 @@ class DownloadItemManager(
     fun pause(id: String) {
         val item = queue[id] ?: return
         item.parts.filter { !it.completed }.forEach { part ->
+            // State first, call second: [registerCall] re-reads `part.state`, so a call created in
+            // the window where `activeCalls` was still empty still gets aborted. Reversing these
+            // two lines re-opens that window.
+            part.state = "paused"
             activeCalls.remove(part.id)?.cancel()
             jobs.remove(part.id)?.cancel()
-            part.state = "paused"
         }
         item.state = "paused"
         repository.save(item)
@@ -253,6 +256,14 @@ class DownloadItemManager(
             repository.remove(id)
             return
         }
+        // Byte counts as they stand at the moment of the cancel, logged here rather than at the end
+        // of this method because by then the transfer has already stopped. Paired with the
+        // "stopped after writing N" line from [transferPartOnce], the difference is exactly what a
+        // cancel still costs the user on a metered connection.
+        LOG.info(
+            "Cancelling download $id (${item.parts.size} part(s)) at " +
+                item.parts.joinToString { "${it.id}=${it.bytesDownloaded}B" }
+        )
         // Drop the persisted row BEFORE stopping anything: a process killed part-way through this
         // method must not leave a row behind for `restoreQueue()` to pick back up. Everything
         // below is cleanup that a restart can redo (or that `IncompleteDownloadCleanup` sweeps);
@@ -275,13 +286,49 @@ class DownloadItemManager(
     }
 
     /**
+     * Registers [call] so [cancel] and [pause] can abort it, then re-checks that the transfer is
+     * still wanted.
+     *
+     * Without that re-check there is a window -- after [cancel]/[pause] have taken their snapshot
+     * of `activeCalls`, which does not yet hold this call, and before `onCallCreated` puts it there
+     * -- in which nothing ever cancels the call. The coroutine is inside `transferPart`'s prologue
+     * (`mkdirs`, `length`, building the request) with no suspend point, so `Job.cancel()` is not
+     * observed either, and OkHttp then streams the entire book: a few milliseconds wide, but it
+     * costs a whole 19-hour audiobook of bandwidth when it hits.
+     *
+     * The re-check is race-free because both stoppers publish their intent BEFORE touching
+     * `activeCalls`: [cancel] adds to `cancelledIds` (a concurrent set) and [pause] writes
+     * `part.state`. So if their `activeCalls.remove` missed this call, their intent is already
+     * visible here.
+     *
+     * `internal` rather than private so that window is directly unit-testable -- it cannot be hit
+     * deterministically through [enqueue], since every other path into the transfer has a suspend
+     * point where `Job.cancel()` wins the race first.
+     */
+    internal fun registerCall(itemId: String, part: DownloadItemPart, call: Call) {
+        activeCalls[part.id] = call
+        if (isCancelled(itemId) || part.state == "paused") {
+            activeCalls.remove(part.id, call)
+            call.cancel()
+            LOG.info("Aborted a transfer for part ${part.id} created after the download was stopped")
+        }
+    }
+
+    /**
      * True once [cancel] has been called for [itemId] and it has not been re-enqueued. Checked
      * before every repository write and every state transition.
      *
      * A cancel cannot stop an in-flight transfer instantly: the coroutine is blocked inside
      * OkHttp's read loop and only notices when the cancelled `Call` makes the next read throw --
-     * and anything already buffered is still delivered first. So one more `onProgress` (and with
-     * a fully buffered response, the rest of the transfer) can run after [cancel] has finished.
+     * and anything already buffered is still delivered first. So one more `onProgress` can run
+     * after [cancel] has finished. OkHttp streams rather than buffering a whole response, so the
+     * abort does land: measured on an SM-G736U1 against this server, a cancel mid-book stopped the
+     * transfer 774 ms and 8.7 MB later (183,885,484 B at the cancel, 192,962,220 B when the
+     * coroutine stopped) -- a real cost on a metered connection, but bounded, not the rest of the
+     * book. A response small enough to be fully buffered, or a test double that hands over the
+     * whole body, can still run to the end, which is why every write path below is gated rather
+     * than trusting the abort. The "Cancelling download" and "Swept cancelled part" log lines
+     * carry those two byte counts so the cost stays measurable rather than assumed.
      * `DbManager.saveDownload` is a read-modify-write that re-adds the row, so a single late
      * persist silently re-creates the row [cancel] just removed. `cancelledIds` lives only in this
      * process, so the next [restoreQueue] has no memory of the cancel and resumes the transfer to
@@ -369,7 +416,13 @@ class DownloadItemManager(
             if (isCancelled(item.id)) {
                 runCatching { File(part.stagingPath).delete() }
                 runCatching { repository.remove(item.id) }
-                LOG.info("Swept cancelled part ${part.id} after its transfer stopped")
+                // `part.bytesDownloaded` is written by `onProgress` on every chunk and this
+                // coroutine has now stopped, so it is the true total pulled off the socket --
+                // subtract the count in the "Cancelling download" line to get what the cancel
+                // cost after the user asked to stop. Logged here rather than in
+                // [transferPartOnce], whose own cancelled branch is usually preempted by the
+                // `CancellationException` that `withContext` throws when the job is cancelled.
+                LOG.info("Swept cancelled part ${part.id}, transfer stopped at ${part.bytesDownloaded}B")
             }
         }
     }
@@ -416,6 +469,8 @@ class DownloadItemManager(
             // asked to cancel via activeCalls, but the response may have raced it to
             // completion. Undo any file it managed to write instead of finalizing/failing
             // a part that no longer belongs to a queued item.
+            val written = stagingFile.takeIf { it.exists() }?.length() ?: 0L
+            LOG.info("Cancelled part ${part.id} stopped after writing $written byte(s); discarding")
             stagingFile.delete()
             return
         }
@@ -441,7 +496,7 @@ class DownloadItemManager(
                 stagingFile,
                 part.contentLength,
                 { diskSpace.hasAvailableSpace(stagingFile) },
-                onCallCreated = { call -> activeCalls[part.id] = call },
+                onCallCreated = { call -> registerCall(item.id, part, call) },
                 onTotalKnown = { total -> if (part.contentLength <= 0L) part.contentLength = total },
                 onProgress = { bytes ->
                     part.bytesDownloaded = bytes

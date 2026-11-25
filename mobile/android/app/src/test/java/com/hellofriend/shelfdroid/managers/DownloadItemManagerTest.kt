@@ -675,4 +675,90 @@ class DownloadItemManagerTest {
         assertEquals("a relaunch must not re-request a cancelled download", requestsBeforeRestart, server.requestCount)
         assertFalse(File(p.finalDestinationPath).exists())
     }
+
+    private fun callToTrack() = client.newCall(okhttp3.Request.Builder().url(server.url("/track/p1")).build())
+
+    /**
+     * The registration window `cancel()` cannot close on its own: a call born after `cancel()` read
+     * `activeCalls` is in nobody's reach, and the coroutine is inside `transferPart`'s prologue with
+     * no suspend point, so `Job.cancel()` does not stop it either -- it would stream the whole book.
+     * Driven through `registerCall` directly because no path through `enqueue` can land a cancel in
+     * that window deterministically.
+     */
+    @Test
+    fun aCallCreatedAfterACancelIsAbortedAtRegistration() {
+        val manager = manager()
+        val p = part("p1")
+        manager.cancel("item-1")
+        val call = callToTrack()
+
+        manager.registerCall("item-1", p, call)
+
+        assertTrue("a call created after cancel() must be aborted at registration", call.isCanceled())
+    }
+
+    @Test
+    fun aCallCreatedAfterAPauseIsAbortedAtRegistration() {
+        val call = callToTrack()
+        manager().registerCall("item-1", part("p1", state = "paused"), call)
+        assertTrue("a call created after pause() must be aborted at registration", call.isCanceled())
+    }
+
+    @Test
+    fun aCallForALiveTransferIsLeftAlone() {
+        val call = callToTrack()
+        manager().registerCall("item-1", part("p1", state = "running"), call)
+        assertFalse("a live transfer's call must not be cancelled", call.isCanceled())
+    }
+
+    /**
+     * What a cancel actually costs: the bytes still pulled off the socket after the user says stop.
+     * The body is throttled so draining it takes seconds, far longer than an abort should -- if
+     * `Call.cancel()` ever stops reaching the in-flight call, this test drains all 8 MB and fails.
+     */
+    @Test
+    fun cancellingAnInFlightTransferStopsThePullInsteadOfDrainingTheBody() = runTest {
+        val totalBytes = 8 * 1024 * 1024
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(okio.Buffer().write(ByteArray(totalBytes)))
+                // ~1.6 MB/s: the whole body needs ~5 s.
+                .throttleBody((64 * 1024).toLong(), 40, java.util.concurrent.TimeUnit.MILLISECONDS)
+        )
+        val p = part("p1", contentLength = totalBytes.toLong())
+        val underway = java.util.concurrent.CountDownLatch(1)
+        // Latched from the listener (called on the transfer thread) rather than polling the part's
+        // plain `bytesDownloaded` field from here, which has no cross-thread visibility guarantee.
+        val listener = object : DownloadEventListener {
+            override fun onItemUpdated(item: DownloadItem) {
+                if (item.bytesDownloaded >= 1024 * 1024) underway.countDown()
+            }
+        }
+        val transferScope = CoroutineScope(SupervisorJob())
+        val manager = DownloadItemManager(
+            repository = repository,
+            httpClient = client,
+            tokenProvider = { "token-1" },
+            refreshToken = { "token-1" },
+            listener = listener,
+            scope = transferScope
+        )
+
+        manager.enqueue(item(p))
+        assertTrue("the transfer never got going", underway.await(20, java.util.concurrent.TimeUnit.SECONDS))
+        manager.cancel("item-1")
+        // `cancel()` drops the job from `jobs` while it is still running, so `awaitIdle()` would
+        // return immediately; join the scope's children instead.
+        transferScope.coroutineContext[Job]!!.children.toList().forEach { it.join() }
+
+        // `onProgress` keeps writing this after the cancel, so it is the total actually pulled.
+        // The join above is the happens-before edge that makes it safe to read here.
+        assertTrue(
+            "a cancel must stop the pull, not drain the body: got ${p.bytesDownloaded} of $totalBytes bytes",
+            p.bytesDownloaded < 3 * 1024 * 1024
+        )
+        assertFalse("a cancelled transfer must leave no staging file", File(p.stagingPath).exists())
+        assertTrue("a cancelled transfer must leave no persisted row", repository.downloads().isEmpty())
+    }
 }
