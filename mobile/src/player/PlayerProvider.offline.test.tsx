@@ -2,6 +2,7 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { cacheServerProgress } from './offlineProgress'
 import { PlayerContextValue, PlayerProvider, usePlayer } from './PlayerProvider'
 
 // Force the native branch of PlayerProvider.play().
@@ -139,6 +140,52 @@ describe('PlayerProvider offline resume', () => {
     // Unsynced fallback derives a session id from the item id, but must never equal it (a recovered
     // session would otherwise be mistaken for "already loaded" by PlayerPage).
     expect((nativePlugin.load.mock.calls[0][0] as { session: { id: string } }).session.id).toBe('offline:b1')
+  })
+
+  it('first offline play of a downloaded, never-played book starts at its cached server position', async () => {
+    cacheServerProgress('b1', 843, { duration: 3600 })
+    renderPlayer({ startSession: vi.fn().mockRejectedValue(new Error('offline')) })
+
+    await act(async () => {
+      await player.play('b1')
+    })
+
+    expect(loadedStartTime()).toBe(843)
+  })
+
+  it('shows the cached server position while loading instead of flashing 0:00', async () => {
+    cacheServerProgress('b1', 843, { duration: 3600 })
+    renderPlayer({ startSession: vi.fn().mockReturnValue(new Promise(() => undefined)) })
+
+    await act(async () => {
+      void player.play('b1')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(screen.getByTestId('state')).toHaveTextContent('loading:843')
+  })
+
+  it('a position listened to offline beats a cached server position', async () => {
+    cacheServerProgress('b1', 843, { duration: 3600 })
+    seedLocal({ currentTime: 30, unsyncedTimeListened: 20 }) // the listener later played, then rewound
+    renderPlayer({ startSession: vi.fn().mockRejectedValue(new Error('offline')) })
+
+    await act(async () => {
+      await player.play('b1')
+    })
+
+    expect(loadedStartTime()).toBe(30)
+  })
+
+  it('a live server position beats the cached snapshot when the server is reachable', async () => {
+    cacheServerProgress('b1', 843, { duration: 3600 })
+    renderPlayer({ startSession: vi.fn().mockResolvedValue(serverSession(900)) })
+
+    await act(async () => {
+      await player.play('b1')
+    })
+
+    expect(loadedStartTime()).toBe(900)
   })
 
   it('starts at 0 with neither a server session nor a local record', async () => {

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import { withClientDefaults } from '../test/absClientMock'
 import { DownloadProvider } from '../downloads/DownloadProvider'
 import type { RawDownloadEvent } from '../downloads/downloadTypes'
+import { cacheServerProgress, localOfflineProgressStorage } from '../player/offlineProgress'
 import type { AbsLibraryItem, AbsPlaybackSession } from '../types/abs'
 import BookDetailsPage from './BookDetailsPage'
 import DownloadsPage from './DownloadsPage'
@@ -90,6 +91,7 @@ function renderApp(client: Partial<AbsClient>) {
 
 describe('DownloadsPage', () => {
   beforeEach(() => {
+    window.localStorage.removeItem('shelfdroid.offlineProgress')
     enqueueMock.mockClear()
     removeMock.mockClear()
     setWifiOnlyMock.mockClear()
@@ -170,6 +172,59 @@ describe('DownloadsPage', () => {
     expect(options.supportedMimeTypes).not.toContain('application/vnd.apple.mpegurl')
     expect(options.forceDirectPlay).toBe(true)
     expect(closeSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ timeListened: 0 }))
+  })
+
+  it('caches the server position when queueing, refreshes it on completion, and never clobbers a listened position', async () => {
+    const user = userEvent.setup()
+    const startSession = vi.fn().mockResolvedValue({ ...session(), currentTime: 843 })
+    const getMe = vi.fn().mockResolvedValue({
+      id: 'u1',
+      username: 'tester',
+      mediaProgress: [{ id: 'p1', libraryItemId: 'book-1', currentTime: 900, duration: 3600, isFinished: false, progress: 0.25 }]
+    })
+    renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession: vi.fn().mockResolvedValue(undefined), getMe })
+
+    await user.click(await screen.findByRole('button', { name: 'Download to device' }))
+    expect(localOfflineProgressStorage.read('book-1')).toMatchObject({ currentTime: 843, source: 'server-cache', unsyncedTimeListened: 0 })
+
+    act(() => emit('downloadComplete', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 1, totalBytes: 1, state: 'complete', error: null }))
+    await waitFor(() => expect(localOfflineProgressStorage.read('book-1')?.currentTime).toBe(900))
+    expect(localOfflineProgressStorage.read('book-1')?.source).toBe('server-cache')
+
+    // A position the listener really reached is newer than any server snapshot and is left alone.
+    localOfflineProgressStorage.write('book-1', { currentTime: 30, duration: 3600, unsyncedTimeListened: 20, updatedAt: 1 })
+    act(() => emit('downloadComplete', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 1, totalBytes: 1, state: 'complete', error: null }))
+    await waitFor(() => expect(getMe).toHaveBeenCalledTimes(2))
+    expect(localOfflineProgressStorage.read('book-1')).toEqual({ currentTime: 30, duration: 3600, unsyncedTimeListened: 20, updatedAt: 1 })
+  })
+
+  it('removing a download clears its cached server position', async () => {
+    const user = userEvent.setup()
+    cacheServerProgress('book-1', 843)
+    listLocalItemsMock.mockResolvedValue({
+      items: [{ libraryItemId: 'book-1', serverConnectionId: 'https://books.test', folderUri: '/downloads/book-1', manifestJson: '{"title":"Project Hail Mary"}', completedAt: 1 }]
+    })
+    render(
+      <AuthContext.Provider
+        value={{ state: { status: 'authenticated', serverUrl: 'https://books.test' }, client: withClientDefaults({}), acquisitionClient: null, login: vi.fn(), logout: vi.fn() }}
+      >
+        <DownloadProvider>
+          <MemoryRouter initialEntries={['/downloads']}>
+            <Routes>
+              <Route path="/downloads" element={<DownloadsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </DownloadProvider>
+      </AuthContext.Provider>
+    )
+    expect(localOfflineProgressStorage.read('book-1')).not.toBeNull()
+
+    await user.click(await screen.findByRole('button', { name: 'Delete Project Hail Mary' }))
+    listLocalItemsMock.mockResolvedValue({ items: [] })
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith({ libraryItemId: 'book-1' }))
+    await waitFor(() => expect(localOfflineProgressStorage.read('book-1')).toBeNull())
   })
 
   it('refuses a session that only offers an HLS playlist and still closes it', async () => {

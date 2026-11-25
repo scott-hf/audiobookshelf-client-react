@@ -1,10 +1,11 @@
 import { Capacitor } from '@capacitor/core'
-import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { AbsClient } from '../api/absClient'
+import { buildProgressMap, getProgress } from '../api/progressMap'
 import { useAuth } from '../auth/AuthProvider'
 import AbsDownloaderNative from '../native/absDownloaderPlugin'
 import AbsFileSystemNative from '../native/absFileSystemPlugin'
-import { localOfflineProgressStorage } from '../player/offlineProgress'
+import { cacheServerProgress, localOfflineProgressStorage } from '../player/offlineProgress'
 import { SettingsContext } from '../settings/SettingsProvider'
 import { DefaultMobileSettings, localSettingsStorage } from '../settings/settingsTypes'
 import type { AbsLibraryItem, AbsPlaybackSession } from '../types/abs'
@@ -53,6 +54,10 @@ async function closeSessionQuietly(client: AbsClient, session: AbsPlaybackSessio
  */
 export function DownloadProvider({ children }: { children: ReactNode }) {
   const { client } = useAuth()
+  // Read through a ref by the long-lived download-complete listener so the listener effect does not
+  // re-subscribe whenever the client identity changes.
+  const clientRef = useRef(client)
+  clientRef.current = client
   const isNative = Capacitor.isNativePlatform()
   const [queue, setQueue] = useState<DownloadSnapshot[]>([])
   const [localItems, setLocalItems] = useState<LocalLibraryItem[]>([])
@@ -98,6 +103,20 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     setQueue((prev) => withoutOrphanedComplete(prev, response.items))
   }, [isNative])
 
+  /** Refreshes the cached server position for a just-finished download: a long download may have
+   * outlived the position captured when it was queued. Best-effort and silent -- the queue-time
+   * snapshot stays if the server cannot be reached. `cacheServerProgress` never overwrites a real
+   * listening record. */
+  const refreshCachedServerProgress = useCallback(async (libraryItemId: string) => {
+    try {
+      const me = await clientRef.current.getMe()
+      const entry = getProgress(buildProgressMap(me.mediaProgress), libraryItemId)
+      if (entry) cacheServerProgress(libraryItemId, entry.currentTime, { duration: entry.duration })
+    } catch {
+      // Offline or a partial client: keep whatever was cached at queue time.
+    }
+  }, [])
+
   useEffect(() => {
     if (!isNative) return
     let cancelled = false
@@ -115,6 +134,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     const completeHandle = AbsDownloaderNative.addListener('downloadComplete', (raw) => {
       applyEvent(raw)
       void refreshLocalItems()
+      if (raw.libraryItemId) void refreshCachedServerProgress(raw.libraryItemId)
     })
     const failedHandle = AbsDownloaderNative.addListener('downloadFailed', applyEvent)
 
@@ -124,7 +144,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       void completeHandle.then((handle) => handle.remove())
       void failedHandle.then((handle) => handle.remove())
     }
-  }, [isNative, applyEvent, refreshLocalItems])
+  }, [isNative, applyEvent, refreshLocalItems, refreshCachedServerProgress])
 
   // Tell the native transfer policy the Wi-Fi-only preference on mount and whenever it changes.
   useEffect(() => {
@@ -188,6 +208,10 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
             chapters: detailed.media.chapters ?? undefined
           }
         })
+        // We are online (this session was just opened), so remember where the server has this book:
+        // an offline first play has no session to ask and would otherwise start at 0:00. Refreshed
+        // again on completion; never overwrites a position this device actually listened to.
+        cacheServerProgress(item.id, session.currentTime, { duration: detailed.media.duration ?? undefined })
       } finally {
         await closeSessionQuietly(client, session)
       }
@@ -220,9 +244,10 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       // The native side drops its queue row too; mirror that so a stale `complete` entry cannot
       // block downloading the book again.
       setQueue((prev) => prev.filter((entry) => entry.libraryItemId !== libraryItemId && entry.id !== libraryItemId))
-      // Drop the locally-cached resume position with the files. Leaving it behind would resume a
-      // re-downloaded book at a position the user never reached in that copy; the ABS server
-      // remains the durable record of progress, and this store is only an offline cache of it.
+      // Drop the locally-cached resume position with the files -- both a recorded listening
+      // position and a cached server snapshot (they share one record). Leaving either behind would
+      // resume a re-downloaded book at a position the user never reached in that copy; the ABS
+      // server remains the durable record of progress, and this store is only an offline cache of it.
       localOfflineProgressStorage.clear(libraryItemId)
       await refreshLocalItems()
     },

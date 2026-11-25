@@ -25,6 +25,16 @@ export interface OfflineProgressRecord {
   unsyncedTimeListened: number
   /** Epoch ms of the last write. */
   updatedAt: number
+  /**
+   * Where `currentTime` came from. Absent (every record written before this field existed, and every
+   * record the player writes) means "a position this device actually reached while playing": the
+   * listener's own, newest-by-definition position. `'server-cache'` means a snapshot of the ABS
+   * server's position taken while online (`cacheServerProgress`) for a book that has not been played
+   * from this device since -- it only exists so an offline first play does not start at 0:00, and it
+   * must lose to anything the server says live and never be treated as listening
+   * (`resolveOfflineStartTime`). The first real playback write replaces it with an unmarked record.
+   */
+  source?: 'server-cache'
 }
 
 /** The storage seam, same shape of idea as `SettingsStorage` (settings/settingsTypes.ts): a
@@ -67,12 +77,15 @@ function toRecord(value: unknown): OfflineProgressRecord | null {
   ) {
     return null
   }
-  return {
+  const parsed: OfflineProgressRecord = {
     currentTime: candidate.currentTime,
     duration: candidate.duration,
     unsyncedTimeListened: candidate.unsyncedTimeListened,
     updatedAt: candidate.updatedAt
   }
+  // Records saved by earlier builds have no `source`; they are real listening positions and stay so.
+  if (candidate.source === 'server-cache') parsed.source = 'server-cache'
+  return parsed
 }
 
 /** Builds a `localStorage`-backed store over `resolveStorage` (a function so a throwing/absent
@@ -128,16 +141,55 @@ export function createLocalStorageOfflineProgress(resolveStorage: () => Storage)
  * same call `settings/settingsTypes.ts` makes for its plain preferences. */
 export const localOfflineProgressStorage: OfflineProgressStorage = createLocalStorageOfflineProgress(() => window.localStorage)
 
-/** The position to start an offline-played item from: the LATER of what the server says and what
- * this device recorded.
+/** The position to start an offline-played item from.
  *
- * Deliberately a max, not "prefer the server". After an hour listened offline the server is stale
- * and the local record is ahead; preferring the server would silently rewind the user and then the
- * next sync would overwrite their real progress with the stale position. `serverCurrentTime` is
- * null when the server was unreachable. */
+ * Against a real listening record (no `source`): the LATER of what the server says and what this
+ * device recorded. Deliberately a max, not "prefer the server". After an hour listened offline the
+ * server is stale and the local record is ahead; preferring the server would silently rewind the
+ * user and then the next sync would overwrite their real progress with the stale position.
+ * `serverCurrentTime` is null when the server was unreachable.
+ *
+ * Against a cached server snapshot (`source: 'server-cache'`): the live server position when there
+ * is one (it is newer than the snapshot, and may legitimately be lower, e.g. a reset), else the
+ * snapshot. Never a max with the live value -- a snapshot is not a position the listener reached. */
 export function resolveOfflineStartTime(serverCurrentTime: number | null, local: OfflineProgressRecord | null): number {
-  const server = isNonNegativeNumber(serverCurrentTime) ? serverCurrentTime : 0
-  return Math.max(server, local?.currentTime ?? 0)
+  const server = isNonNegativeNumber(serverCurrentTime) ? serverCurrentTime : null
+  if (local?.source === 'server-cache') return server ?? local.currentTime
+  return Math.max(server ?? 0, local?.currentTime ?? 0)
+}
+
+export interface CacheServerProgressOptions {
+  storage?: OfflineProgressStorage
+  /** Total length in seconds, when known (the record is only used for its position). */
+  duration?: number
+  now?: () => number
+}
+
+/** Remembers the ABS server's position for a downloaded item so a first play with the server
+ * unreachable resumes there instead of at 0:00. Call it while online (at queue and completion time).
+ *
+ * Never overwrites a real listening record: once this device has played the item, its own position
+ * is newer than any server snapshot, and a stale snapshot must not rewind the listener or wipe the
+ * unsynced-listening counter. An earlier snapshot IS refreshed. Best-effort; never throws. Returns
+ * true when a snapshot was written. */
+export function cacheServerProgress(libraryItemId: string, serverCurrentTime: number, options: CacheServerProgressOptions = {}): boolean {
+  try {
+    if (!isNonNegativeNumber(serverCurrentTime)) return false
+    const storage = options.storage ?? localOfflineProgressStorage
+    const existing = storage.read(libraryItemId)
+    if (existing && existing.source !== 'server-cache') return false
+    const duration = isNonNegativeNumber(options.duration) ? options.duration : (existing?.duration ?? 0)
+    storage.write(libraryItemId, {
+      currentTime: serverCurrentTime,
+      duration,
+      unsyncedTimeListened: 0,
+      updatedAt: (options.now ?? Date.now)(),
+      source: 'server-cache'
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Pushes progress made offline to the server, once, when it is reachable again; best-effort.

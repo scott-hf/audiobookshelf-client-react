@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AbsClient } from '../api/absClient'
 import type { NativeProgressSync } from './nativeProgressSync'
 import {
+  cacheServerProgress,
   createLocalStorageOfflineProgress,
   createOfflineProgressSync,
   OFFLINE_PROGRESS_WRITE_INTERVAL_MS,
@@ -141,6 +142,103 @@ describe('resolveOfflineStartTime', () => {
     expect(resolveOfflineStartTime(250, null)).toBe(250)
     expect(resolveOfflineStartTime(null, null)).toBe(0)
     expect(resolveOfflineStartTime(Number.NaN, null)).toBe(0)
+  })
+
+  it('starts a downloaded-but-never-played book at its cached server position when offline', () => {
+    expect(resolveOfflineStartTime(null, record({ currentTime: 843, source: 'server-cache' }))).toBe(843)
+  })
+
+  it('prefers the live server position over a cached snapshot, even a lower one', () => {
+    expect(resolveOfflineStartTime(900, record({ currentTime: 843, source: 'server-cache' }))).toBe(900)
+    expect(resolveOfflineStartTime(10, record({ currentTime: 843, source: 'server-cache' }))).toBe(10)
+  })
+
+  it('still resolves an old-format record (no source field) as a listening position', () => {
+    const legacy = { currentTime: 500, duration: 3600, unsyncedTimeListened: 12, updatedAt: 1 }
+    const storage = fakeStorage({ [KEY]: JSON.stringify({ b1: legacy }) })
+    const loaded = createLocalStorageOfflineProgress(() => storage).read('b1')
+
+    expect(loaded).toEqual(legacy)
+    expect(loaded?.source).toBeUndefined()
+    expect(resolveOfflineStartTime(null, loaded)).toBe(500)
+    expect(resolveOfflineStartTime(100, loaded)).toBe(500)
+    expect(resolveOfflineStartTime(900, loaded)).toBe(900)
+  })
+})
+
+describe('cacheServerProgress', () => {
+  it('stores a server snapshot that resolves as the offline start time and is not "unsynced"', () => {
+    const store = memoryStore()
+
+    expect(cacheServerProgress('b1', 843, { storage: store, duration: 3600, now: () => 5 })).toBe(true)
+
+    expect(store.read('b1')).toEqual({ currentTime: 843, duration: 3600, unsyncedTimeListened: 0, updatedAt: 5, source: 'server-cache' })
+    expect(resolveOfflineStartTime(null, store.read('b1'))).toBe(843)
+    expect(store.listUnsynced()).toEqual([])
+  })
+
+  it('survives a store round-trip through the real storage key (app restart)', () => {
+    const storage = fakeStorage()
+    cacheServerProgress('b1', 843, { storage: createLocalStorageOfflineProgress(() => storage) })
+    expect(createLocalStorageOfflineProgress(() => storage).read('b1')).toMatchObject({ currentTime: 843, source: 'server-cache' })
+  })
+
+  it('refreshes an earlier snapshot', () => {
+    const store = memoryStore()
+    cacheServerProgress('b1', 100, { storage: store })
+    expect(cacheServerProgress('b1', 400, { storage: store })).toBe(true)
+    expect(store.read('b1')).toMatchObject({ currentTime: 400, source: 'server-cache' })
+  })
+
+  it('never overwrites a position actually listened to, even a lower one (offline listening wins)', () => {
+    const store = memoryStore()
+    store.write('b1', record({ currentTime: 30, unsyncedTimeListened: 45 }))
+
+    expect(cacheServerProgress('b1', 843, { storage: store })).toBe(false)
+
+    expect(store.read('b1')).toEqual(record({ currentTime: 30, unsyncedTimeListened: 45 }))
+    expect(resolveOfflineStartTime(null, store.read('b1'))).toBe(30)
+  })
+
+  it('is replaced by the first real playback write, which then wins over the old snapshot', async () => {
+    const store = memoryStore()
+    cacheServerProgress('b1', 843, { storage: store })
+    const sync = createOfflineProgressSync('b1', null, { storage: store, now: () => 1_000 })
+
+    sync.observe(snapshot({ currentTime: 20 }))
+    await sync.close()
+
+    expect(store.read('b1')?.source).toBeUndefined()
+    expect(resolveOfflineStartTime(null, store.read('b1'))).toBe(20)
+  })
+
+  it('does not feed the unsynced replay (nothing was listened)', async () => {
+    const store = memoryStore()
+    cacheServerProgress('b1', 843, { storage: store })
+    const syncSession = vi.fn().mockResolvedValue(undefined)
+
+    await expect(replayUnsyncedOfflineProgress({ syncSession } as never, 's', 'b1', 0, store)).resolves.toBe(false)
+    expect(syncSession).not.toHaveBeenCalled()
+  })
+
+  it('clearing the item removes the snapshot', () => {
+    const store = memoryStore()
+    cacheServerProgress('b1', 843, { storage: store })
+    store.clear('b1')
+    expect(store.read('b1')).toBeNull()
+    expect(resolveOfflineStartTime(null, store.read('b1'))).toBe(0)
+  })
+
+  it('ignores invalid positions and never throws over an unavailable store', () => {
+    const store = memoryStore()
+    expect(cacheServerProgress('b1', Number.NaN, { storage: store })).toBe(false)
+    expect(cacheServerProgress('b1', -1, { storage: store })).toBe(false)
+    expect(store.read('b1')).toBeNull()
+
+    const broken = createLocalStorageOfflineProgress(() => {
+      throw new Error('no storage')
+    })
+    expect(() => cacheServerProgress('b1', 5, { storage: broken })).not.toThrow()
   })
 })
 
