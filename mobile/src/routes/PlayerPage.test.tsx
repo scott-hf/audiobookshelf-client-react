@@ -77,7 +77,7 @@ function renderPlayer(startSession: ReturnType<typeof vi.fn> = vi.fn().mockResol
     login: vi.fn(),
     logout: vi.fn()
   }
-  render(
+  const rendered = render(
     <AuthContext.Provider value={authValue}>
       <PlayerProvider>
         <MemoryRouter initialEntries={['/player/b1']}>
@@ -88,7 +88,7 @@ function renderPlayer(startSession: ReturnType<typeof vi.fn> = vi.fn().mockResol
       </PlayerProvider>
     </AuthContext.Provider>
   )
-  return { startSession }
+  return { startSession, ...rendered }
 }
 
 /** Waits for play() to finish loading, then reports native buffering/playing like ExoPlayer would. */
@@ -408,5 +408,67 @@ describe('PlayerPage watchdogs (native)', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Loading took too long')
     expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+  })
+})
+
+describe('PlayerPage lifecycle', () => {
+  /**
+   * The page is mounted only on the `/play` routes, so every tab tap unmounts it. It used to call
+   * `close()` on unmount, which stopped playback outright -- tapping Downloads mid-book killed the
+   * audio. Audio belongs to the native foreground service and must outlive this page.
+   */
+  it('does not stop playback when the page unmounts', async () => {
+    const { unmount } = renderPlayer()
+    await settleLoaded()
+    emit({ state: 'playing', currentTime: 42, playWhenReady: true })
+    // `play()` tears the previous item down itself (`stop({ keepForeground: true })`) before
+    // loading, so only what the unmount does is interesting here.
+    nativePlugin.stop.mockClear()
+
+    unmount()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(nativePlugin.stop).not.toHaveBeenCalled()
+  })
+})
+
+describe('PlayerPage sleep timer', () => {
+  it('offers several durations and sends the chosen one to the player', async () => {
+    const user = userEvent.setup()
+    renderPlayer()
+    await settleLoaded()
+    emit({ state: 'playing', currentTime: 0, playWhenReady: true })
+
+    // Closed by default: the durations only appear once the user asks for them.
+    expect(screen.queryByTestId('sleep-timer-options')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Set a sleep timer' }))
+
+    // 30 used to be the only choice there was.
+    for (const minutes of [5, 10, 15, 30, 45, 60, 90]) {
+      expect(screen.getByRole('button', { name: `${minutes}m` })).toBeInTheDocument()
+    }
+
+    await user.click(screen.getByRole('button', { name: '45m' }))
+
+    expect(nativePlugin.setSleepTimer).toHaveBeenCalledWith({ seconds: 45 * 60 })
+    expect(screen.getByRole('button', { name: 'Sleep timer set to 45 minutes' })).toBeInTheDocument()
+    expect(screen.queryByTestId('sleep-timer-options')).not.toBeInTheDocument()
+  })
+
+  it('clears the timer from the Off choice', async () => {
+    const user = userEvent.setup()
+    renderPlayer()
+    await settleLoaded()
+    emit({ state: 'playing', currentTime: 0, playWhenReady: true })
+
+    await user.click(screen.getByRole('button', { name: 'Set a sleep timer' }))
+    await user.click(screen.getByRole('button', { name: '15m' }))
+    await user.click(screen.getByRole('button', { name: 'Sleep timer set to 15 minutes' }))
+    await user.click(screen.getByRole('button', { name: 'Off' }))
+
+    expect(nativePlugin.setSleepTimer).toHaveBeenLastCalledWith({ seconds: null })
+    expect(screen.getByRole('button', { name: 'Set a sleep timer' })).toBeInTheDocument()
   })
 })

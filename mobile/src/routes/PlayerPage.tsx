@@ -22,6 +22,12 @@ function formatTime(seconds: number): string {
 
 const PLAYBACK_RATES = [1, 1.25, 1.5, 2]
 
+/** Sleep timer durations, in minutes. The native side (`SleepTimerManager.start`) takes arbitrary
+ * seconds, so this list is purely what the UI offers -- it was previously a single hardcoded 30,
+ * which left no way to ask for anything else. Matches the set the Audiobookshelf web player
+ * offers, so the two do not disagree about what a sleep timer can be. */
+const SLEEP_TIMER_MINUTES = [5, 10, 15, 30, 45, 60, 90]
+
 /** Matches PlayerProvider's DEFAULT_JUMP_* constants -- the jump buttons call jumpBackward()/
  * jumpForward() with no argument, so these are labels for the provider's defaults, not a
  * separate source of truth. (The configurable values in Settings are not yet wired through to
@@ -43,10 +49,14 @@ export default function PlayerPage() {
   const { itemId } = useParams<{ itemId: string }>()
   const { client } = useAuth()
   const t = useTypeSafeTranslations()
-  const { state, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
+  const { state, stalled, rate, play, pause, resume, seek, setRate, jumpForward, jumpBackward, setSleepTimer } = usePlayer()
   const { localItems } = useDownloads()
   const [item, setItem] = useState<AbsLibraryItem | null>(null)
-  const [sleepTimerOn, setSleepTimerOn] = useState(false)
+  // `null` = no timer running. The native side is the clock; this is only what the user picked,
+  // so the label can name it. There is no remaining-time feed from the player yet, which is why
+  // the button shows the chosen duration rather than a countdown.
+  const [sleepMinutes, setSleepMinutes] = useState<number | null>(null)
+  const [sleepPickerOpen, setSleepPickerOpen] = useState(false)
 
   useEffect(() => {
     if (itemId && state.itemId !== itemId) {
@@ -54,10 +64,16 @@ export default function PlayerPage() {
       // button, so the rejection itself carries nothing more to show.
       play(itemId).catch(() => {})
     }
-    // Item replacement / unmount -- close reports final progress and stops the sync timer.
-    return () => {
-      void close()
-    }
+    // Deliberately NO unmount cleanup. This page is only mounted on the `/play` routes, so any
+    // tab tap (Downloads, Library, Settings) unmounts it -- and a `close()` here stopped playback
+    // outright, which is what the user hit by tapping Downloads mid-book. Audio is owned by the
+    // native foreground service, not by this page, and must outlive it; progress keeps being
+    // reported by the provider's sync timer, which also keeps running.
+    //
+    // Item replacement does not need this either: `play()` tears the previous item down itself via
+    // `teardownNative({ keepForeground: true })`. Stopping for real is the pause button, or
+    // dismissing the player notification.
+    //
     // Only re-run when the target item changes, not on every player state update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemId])
@@ -102,10 +118,10 @@ export default function PlayerPage() {
   const authorName = item?.media.metadata.authorName ?? offline?.author
   const coverUrl = item ? client.authorizedStreamUrl(`/api/items/${encodeURIComponent(itemId)}/cover`) : localCoverSrc(offline?.coverPath)
 
-  const toggleSleepTimer = () => {
-    const next = !sleepTimerOn
-    setSleepTimerOn(next)
-    setSleepTimer(next ? 30 * 60 : null)
+  const chooseSleepTimer = (minutes: number | null) => {
+    setSleepMinutes(minutes)
+    setSleepTimer(minutes === null ? null : minutes * 60)
+    setSleepPickerOpen(false)
   }
 
   return (
@@ -241,19 +257,49 @@ export default function PlayerPage() {
 
           <button
             type="button"
-            onClick={toggleSleepTimer}
-            aria-pressed={sleepTimerOn}
+            onClick={() => setSleepPickerOpen((open) => !open)}
+            aria-pressed={sleepMinutes !== null}
+            aria-expanded={sleepPickerOpen}
+            aria-label={sleepMinutes === null ? 'Set a sleep timer' : `Sleep timer set to ${sleepMinutes} minutes`}
             className={mergeClasses(
               'flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors',
-              sleepTimerOn ? 'bg-accent border-accent text-black-600' : 'bg-primary border-border text-foreground hover:bg-bg-hover'
+              sleepMinutes !== null ? 'bg-accent border-accent text-black-600' : 'bg-primary border-border text-foreground hover:bg-bg-hover'
             )}
           >
             <span className="material-symbols text-base" aria-hidden="true">
               bedtime
             </span>
-            {sleepTimerOn ? 'Sleep 30m on' : 'Sleep 30m'}
+            {sleepMinutes === null ? 'Sleep' : `Sleep ${sleepMinutes}m`}
           </button>
         </div>
+
+        {sleepPickerOpen && (
+          <div data-testid="sleep-timer-options" className="mt-2 flex w-full flex-wrap items-center justify-center gap-2">
+            {SLEEP_TIMER_MINUTES.map((minutes) => (
+              <button
+                key={minutes}
+                type="button"
+                onClick={() => chooseSleepTimer(minutes)}
+                aria-pressed={sleepMinutes === minutes}
+                className={mergeClasses(
+                  'rounded-md border px-2.5 py-1 text-sm font-semibold tabular-nums transition-colors',
+                  sleepMinutes === minutes ? 'bg-accent border-accent text-black-600' : 'bg-primary border-border text-foreground hover:bg-bg-hover'
+                )}
+              >
+                {minutes}m
+              </button>
+            ))}
+            {sleepMinutes !== null && (
+              <button
+                type="button"
+                onClick={() => chooseSleepTimer(null)}
+                className="bg-primary border-border text-foreground hover:bg-bg-hover rounded-md border px-2.5 py-1 text-sm font-semibold transition-colors"
+              >
+                Off
+              </button>
+            )}
+          </div>
+        )}
 
         {state.error && (
           <p role="alert" className="text-error mt-3 text-center text-sm">
