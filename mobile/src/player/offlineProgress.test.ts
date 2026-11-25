@@ -359,9 +359,12 @@ describe('replayAllUnsyncedOfflineProgress (no open session: every stranded item
 
     // The only close that carries listening is the one for the item that is genuinely ahead; the
     // other two sessions were opened to read the server position and closed reporting it unchanged.
-    expect(closeSession.mock.calls.filter((call) => (call[1] as { timeListened: number }).timeListened > 0)).toEqual([['sess-ahead', { currentTime: 600, timeListened: 60 }]])
-    expect(closeSession).toHaveBeenCalledWith('sess-equal', { currentTime: 500, timeListened: 0 })
-    expect(closeSession).toHaveBeenCalledWith('sess-behind', { currentTime: 900, timeListened: 0 })
+    expect(closeSession.mock.calls.filter((call) => ((call[1] as { timeListened: number } | undefined)?.timeListened ?? 0) > 0)).toEqual([
+      ['sess-ahead', { currentTime: 600, timeListened: 60 }]
+    ])
+    // Nothing worth pushing: these close with no body at all, so they cannot disturb the server.
+    expect(closeSession).toHaveBeenCalledWith('sess-equal')
+    expect(closeSession).toHaveBeenCalledWith('sess-behind')
     expect(store.listUnsynced()).toEqual([])
     // Local positions are untouched: a later offline resume still takes max(server, local).
     expect(store.read('behind')?.currentTime).toBe(400)
@@ -468,7 +471,9 @@ describe('replayAllUnsyncedOfflineProgress (no open session: every stranded item
     ).resolves.toBe(0)
 
     expect(closeSession).toHaveBeenCalledTimes(1)
-    expect(closeSession).toHaveBeenCalledWith('sess-b1', { currentTime: 0, timeListened: 0 }) // the probe, reporting nothing
+    // The probe closes with no body at all: echoing the session's own position back would reset an
+    // already-finished item to 0, since ABS opens a session on a finished item at 0.
+    expect(closeSession).toHaveBeenCalledWith('sess-b1')
     expect(store.read('b1')?.unsyncedTimeListened).toBe(60)
   })
 

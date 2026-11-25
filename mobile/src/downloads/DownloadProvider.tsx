@@ -37,10 +37,15 @@ function isStreamingSession(session: AbsPlaybackSession): boolean {
 }
 
 /** Best-effort: `download()` only opens a play session to learn the track URLs, so it must close
- * it again (or the server keeps counting it as an open listening session). Never throws. */
+ * it again (or the server keeps counting it as an open listening session). Never throws.
+ *
+ * Closes with NO body on purpose. Nothing was played here, so there is no progress to report, and
+ * reporting one is actively destructive: ABS opens a session for an already-finished item at
+ * currentTime 0, so closing with `session.currentTime` wrote 0 back and cleared `isFinished`.
+ * Downloading a finished book wiped it -- four books on 2026-11-24. */
 async function closeSessionQuietly(client: AbsClient, session: AbsPlaybackSession): Promise<void> {
   try {
-    await client.closeSession(session.id, { currentTime: session.currentTime, timeListened: 0 })
+    await client.closeSession(session.id)
   } catch {
     // The session expires server-side on its own; nothing useful to do with a failure here.
   }
@@ -211,12 +216,16 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
         // We are online (this session was just opened), so remember where the server has this book:
         // an offline first play has no session to ask and would otherwise start at 0:00. Refreshed
         // again on completion; never overwrites a position this device actually listened to.
-        cacheServerProgress(item.id, session.currentTime, { duration: detailed.media.duration ?? undefined })
+        //
+        // Read the position from `/api/me` -> mediaProgress, NOT from `session.currentTime`: a
+        // session opened on a finished item reports 0, which would have cached 0:00 as "where the
+        // server has this book" and restarted a finished book from the beginning offline.
+        await refreshCachedServerProgress(item.id)
       } finally {
         await closeSessionQuietly(client, session)
       }
     },
-    [isNative, queue, localItems, client, pushWifiOnly]
+    [isNative, queue, localItems, client, pushWifiOnly, refreshCachedServerProgress]
   )
 
   const pause = useCallback(

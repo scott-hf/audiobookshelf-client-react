@@ -191,16 +191,24 @@ export function createAbsClient(deps: AbsClientDeps) {
         false
       ),
 
-    /** Closes the session; when `body` carries progress the server applies it first (ABS runs a
-     * sync with the same payload before closing), so this is also a one-call "report and finish". */
-    closeSession: (sessionId: string, body: { currentTime: number; timeListened: number }) =>
+    /** Closes the session. When `body` carries progress the server applies it first (ABS runs a
+     * sync with the same payload before closing), so this is also a one-call "report and finish".
+     *
+     * OMIT `body` for a session that was never played. ABS starts a session for an item the user
+     * has already FINISHED at currentTime 0, so closing such a session with `session.currentTime`
+     * writes 0 back and clears `isFinished` -- that destroyed four finished books on 2026-11-24
+     * (the download path opened a session only to read track URLs, then closed it with progress).
+     * With no body ABS nulls the payload and closes without touching mediaProgress. */
+    closeSession: (sessionId: string, body?: { currentTime: number; timeListened: number }) =>
       request<void>(
         `/api/session/${encodeURIComponent(sessionId)}/close`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body)
-        },
+        body
+          ? {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body)
+            }
+          : { method: 'POST' },
         false,
         REQUEST_TIMEOUT_MS,
         false

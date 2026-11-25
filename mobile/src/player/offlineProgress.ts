@@ -253,11 +253,13 @@ function isPerItemFailure(error: unknown): boolean {
   return error instanceof AbsApiError && error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 408 && error.status !== 429
 }
 
-/** Best-effort close of a session this module opened only to ask for the server's position. Reports
- * the server's own position and no listening, so it changes nothing. Never throws. */
-async function closeProbeSession(api: Pick<AbsClient, 'closeSession'>, session: { id: string; currentTime: number }): Promise<void> {
+/** Best-effort close of a session this module opened only to ask for the server's position. Closes
+ * with NO body: there is nothing to report, and echoing `session.currentTime` back is not the
+ * harmless no-op it looks like -- ABS opens a session on an already-finished item at 0, so the echo
+ * would write 0 and clear `isFinished`. Never throws. */
+async function closeProbeSession(api: Pick<AbsClient, 'closeSession'>, session: { id: string }): Promise<void> {
   try {
-    await api.closeSession(session.id, { currentTime: session.currentTime, timeListened: 0 })
+    await api.closeSession(session.id)
   } catch {
     // An open session expires on the server; nothing else to do.
   }

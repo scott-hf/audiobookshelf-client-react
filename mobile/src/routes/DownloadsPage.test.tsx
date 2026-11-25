@@ -171,30 +171,40 @@ describe('DownloadsPage', () => {
     const options = startSession.mock.calls[0][1] as { supportedMimeTypes: string[]; forceDirectPlay: boolean }
     expect(options.supportedMimeTypes).not.toContain('application/vnd.apple.mpegurl')
     expect(options.forceDirectPlay).toBe(true)
-    expect(closeSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ timeListened: 0 }))
+    // Closed with NO progress body. Nothing was played, and reporting a position here destroyed
+    // user data: ABS opens a session on an already-finished book at currentTime 0, so closing with
+    // `session.currentTime` wrote 0 back and cleared `isFinished` -- downloading a finished book
+    // wiped it (four books on 2026-11-24).
+    expect(closeSession).toHaveBeenCalledWith('session-1')
   })
 
   it('caches the server position when queueing, refreshes it on completion, and never clobbers a listened position', async () => {
     const user = userEvent.setup()
-    const startSession = vi.fn().mockResolvedValue({ ...session(), currentTime: 843 })
-    const getMe = vi.fn().mockResolvedValue({
+    // The session reports 0, the way ABS opens a session on an item the user already FINISHED.
+    // The cache must take the real position from `/api/me`, not this: caching 0 would restart a
+    // finished book from the beginning on an offline first play.
+    const startSession = vi.fn().mockResolvedValue({ ...session(), currentTime: 0 })
+    const me = (currentTime: number) => ({
       id: 'u1',
       username: 'tester',
-      mediaProgress: [{ id: 'p1', libraryItemId: 'book-1', currentTime: 900, duration: 3600, isFinished: false, progress: 0.25 }]
+      mediaProgress: [{ id: 'p1', libraryItemId: 'book-1', currentTime, duration: 3600, isFinished: false, progress: 0.25 }]
     })
+    const getMe = vi.fn().mockResolvedValueOnce(me(900)).mockResolvedValue(me(1200))
     renderApp({ getLibraryItem: vi.fn().mockResolvedValue(bookFixture()), startSession, closeSession: vi.fn().mockResolvedValue(undefined), getMe })
 
     await user.click(await screen.findByRole('button', { name: 'Download to device' }))
-    expect(localOfflineProgressStorage.read('book-1')).toMatchObject({ currentTime: 843, source: 'server-cache', unsyncedTimeListened: 0 })
+    await waitFor(() => expect(localOfflineProgressStorage.read('book-1')).toMatchObject({ currentTime: 900, source: 'server-cache', unsyncedTimeListened: 0 }))
 
+    // A long download may outlive the queue-time snapshot, so completion re-reads the server.
     act(() => emit('downloadComplete', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 1, totalBytes: 1, state: 'complete', error: null }))
-    await waitFor(() => expect(localOfflineProgressStorage.read('book-1')?.currentTime).toBe(900))
+    await waitFor(() => expect(localOfflineProgressStorage.read('book-1')?.currentTime).toBe(1200))
     expect(localOfflineProgressStorage.read('book-1')?.source).toBe('server-cache')
 
     // A position the listener really reached is newer than any server snapshot and is left alone.
     localOfflineProgressStorage.write('book-1', { currentTime: 30, duration: 3600, unsyncedTimeListened: 20, updatedAt: 1 })
     act(() => emit('downloadComplete', { id: 'book-1', libraryItemId: 'book-1', title: 'T', bytesDownloaded: 1, totalBytes: 1, state: 'complete', error: null }))
-    await waitFor(() => expect(getMe).toHaveBeenCalledTimes(2))
+    // Three reads by now: one at queue time, one per completion event.
+    await waitFor(() => expect(getMe).toHaveBeenCalledTimes(3))
     expect(localOfflineProgressStorage.read('book-1')).toEqual({ currentTime: 30, duration: 3600, unsyncedTimeListened: 20, updatedAt: 1 })
   })
 
@@ -237,7 +247,7 @@ describe('DownloadsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Download to device' }))
 
     expect(enqueueMock).not.toHaveBeenCalled()
-    expect(closeSession).toHaveBeenCalledWith('session-hls', expect.anything())
+    expect(closeSession).toHaveBeenCalledWith('session-hls')
     consoleError.mockRestore()
   })
 

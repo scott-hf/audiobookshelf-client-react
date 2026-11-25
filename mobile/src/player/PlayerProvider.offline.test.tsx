@@ -331,7 +331,7 @@ describe('PlayerProvider replays stranded offline progress without waiting for a
     expect(storedAll().b2.unsyncedTimeListened).toBe(0)
     // The snapshot is never even asked about; the behind-the-server record is probed but sends no listening.
     expect(startSession.mock.calls.map((call) => call[0]).sort()).toEqual(['b1', 'b2', 'behind'])
-    expect(closeSession).toHaveBeenCalledWith('sess-behind', { currentTime: 500, timeListened: 0 })
+    expect(closeSession).toHaveBeenCalledWith('sess-behind')
     expect(storedAll().snapshot).toMatchObject({ currentTime: 843, unsyncedTimeListened: 0, source: 'server-cache' })
 
     // A second reconnect finds nothing left: no double count.
