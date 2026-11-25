@@ -21,6 +21,23 @@ function durationPretty(seconds: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
 }
 
+/**
+ * The wire sends the sentinel 'unknown' for a missing format (an older client may be talking to a
+ * newer gateway and vice versa, so the contract keeps it a non-null string). Treat that, in any
+ * case, and blank, as "no format": the caller renders no pill. `qualityLabel` is never read.
+ * Mirrored in src/components/acquisition/ReleaseCard.tsx -- keep the two in step.
+ */
+function meaningfulFormat(format: string | null | undefined): string | null {
+  const trimmed = format?.trim()
+  return trimmed && trimmed.toLowerCase() !== 'unknown' ? trimmed : null
+}
+
+/** `sizeLabel` is absent (undefined) from an older gateway and null/blank when the source had none. */
+function meaningfulText(text: string | null | undefined): string | null {
+  const trimmed = text?.trim()
+  return trimmed ? trimmed : null
+}
+
 interface ReleaseCardProps {
   release: SearchRelease
   onAcquire: (release: SearchRelease) => void
@@ -34,7 +51,8 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
   const canAcquire = release.requestable && !release.alreadyOwned
   const narrators = release.narrators.join(', ')
   // A real byte count wins; otherwise the source's own size string; otherwise no size pill.
-  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : release.sizeLabel
+  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : meaningfulText(release.sizeLabel)
+  const format = meaningfulFormat(release.format)
 
   return (
     <div className="bg-primary border-border rounded-md border p-3" data-testid="release-card">
@@ -45,7 +63,7 @@ export default function ReleaseCard({ release, onAcquire, submitting = false }: 
       </p>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {release.format != null && <Badge tone="info">{release.format.toUpperCase()}</Badge>}
+        {format != null && <Badge tone="info">{format.toUpperCase()}</Badge>}
         {sizeText != null && <Badge>{sizeText}</Badge>}
         {release.durationSeconds != null && <Badge>{durationPretty(release.durationSeconds)}</Badge>}
         <Badge>{release.sourceLabel}</Badge>

@@ -136,6 +136,7 @@ const server = http.createServer(async (req, res) => {
           sizeLabel: null,
           durationSeconds: 3600,
           sourceLabel: 'AudioBookBay',
+          qualityLabel: 'V0',
           seeders: 12,
           coverUrl: null,
           alreadyOwned: false,

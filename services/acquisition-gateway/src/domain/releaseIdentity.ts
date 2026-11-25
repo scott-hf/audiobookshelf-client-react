@@ -66,7 +66,12 @@ export function toPublicRelease(raw: LibrarrSearchResult, releaseId: string): Se
     title: raw.title,
     author: raw.author ?? '',
     narrators: [],
-    format: raw.format ?? null,
+    // `format` and `qualityLabel` are deliberately left as the legacy sentinel pair on the wire:
+    // a sideloaded client may be older than this server and does `format.toUpperCase()` and
+    // requires `qualityLabel`. The duplicate-pill fix lives in the clients (they treat 'unknown'
+    // as absent and never render `qualityLabel`), not here.
+    format: raw.format ?? 'unknown',
+    qualityLabel: raw.format?.toUpperCase() ?? 'Unknown',
     sizeBytes: raw.size ?? null,
     sizeLabel: normalizeSizeLabel(raw.size_human),
     durationSeconds: null,

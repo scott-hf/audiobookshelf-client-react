@@ -45,17 +45,30 @@ export const SearchReleaseSchema = z.object({
   title: z.string(),
   author: z.string(),
   narrators: z.array(z.string()),
-  // `null` means the source did not say. There is deliberately no "unknown" sentinel string: a
-  // sentinel renders as if it were data (a pill reading "UNKNOWN"). AudioBookBay's search listing
-  // carries no format at all -- it exists only on the detail page.
-  format: z.string().nullable(),
+  // The wire value is a plain string, and the gateway sends the sentinel 'unknown' when the
+  // source did not say (AudioBookBay's search listing carries no format at all -- it exists only
+  // on the detail page). It stays a non-null string ON PURPOSE: the sideloaded client may be older
+  // than the gateway and calls `format.toUpperCase()` unguarded, so `null` would crash it.
+  // A client MUST treat 'unknown' (any case) and blank as "no format" and render no pill.
+  format: z.string(),
   sizeBytes: z.number().nullable(),
   // The source's own human-readable size ("1.2 GB"), passed through untouched and never parsed
   // into bytes (lossy, and sometimes not a size at all). `null` when the source sent nothing
   // usable. A client shows `sizeBytes` when it is set, else this.
-  sizeLabel: z.string().nullable(),
+  // `.optional()` because an OLD gateway omits the key, and a NEW client must still parse its
+  // response. The other direction is free: zod strips unknown keys by default, so an OLD client
+  // parsing a NEW gateway's response simply drops `sizeLabel`. Adding a field is therefore safe
+  // both ways; removing or retyping one is not.
+  sizeLabel: z.string().nullable().optional(),
   durationSeconds: z.number().nullable(),
   sourceLabel: z.string(),
+  /**
+   * @deprecated Derived from `format` and nothing else, so rendering it beside `format` shows one
+   * fact as two pills. Kept ONLY so pre-f88ee163 clients (which require it in their bundled
+   * schema) keep parsing. No new code may render or read it. Remove it in a coordinated release,
+   * once no old client remains.
+   */
+  qualityLabel: z.string(),
   seeders: z.number().nullable(),
   coverUrl: z.string().nullable(),
   alreadyOwned: z.boolean(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcquisitionSchema, CreateAcquisitionBodySchema, DiscoverBrowseQuerySchema, SearchQuerySchema } from './index'
+import { AcquisitionSchema, CreateAcquisitionBodySchema, DiscoverBrowseQuerySchema, SearchQuerySchema, SearchReleaseSchema, SearchResponseSchema } from './index'
 
 describe('acquisition contract', () => {
   it('rejects progress outside 0..100', () => {
@@ -57,5 +57,55 @@ describe('acquisition contract', () => {
         idempotencyKey: crypto.randomUUID()
       })
     ).toBeTruthy()
+  })
+
+  // The client is a sideloaded APK that may be older than the gateway (or newer). These pin the
+  // wire shapes of BOTH generations so neither deploy order breaks Discover search.
+  describe('SearchRelease is order-independent across client and gateway versions', () => {
+    const base = {
+      releaseId: 'release_12345678',
+      title: 'The Children of Hurin - J.R.R. Tolkien',
+      author: '',
+      narrators: [],
+      sizeBytes: null,
+      durationSeconds: null,
+      sourceLabel: 'AudioBookBay',
+      seeders: null,
+      coverUrl: null,
+      alreadyOwned: false,
+      existingAbsItemId: null,
+      requestable: true
+    }
+    // What a pre-f88ee163 gateway sends: no `sizeLabel`, sentinel format, `qualityLabel` present.
+    const oldGatewayRow = { ...base, format: 'unknown', qualityLabel: 'Unknown' }
+    // What the current gateway sends: the same legacy fields PLUS the additive `sizeLabel`.
+    const newGatewayRow = { ...base, format: 'unknown', qualityLabel: 'Unknown', sizeLabel: '1.2 GB' }
+
+    it('NEW client schema parses an OLD gateway response (no sizeLabel key)', () => {
+      const parsed = SearchResponseSchema.parse({ searchSessionId: 'search_12345678', results: [oldGatewayRow] })
+      expect(parsed.results[0].format).toBe('unknown')
+      expect(parsed.results[0].sizeLabel).toBeUndefined()
+    })
+
+    it('NEW client schema parses a NEW gateway response (with sizeLabel, string or null)', () => {
+      const parsed = SearchResponseSchema.parse({ searchSessionId: 'search_12345678', results: [newGatewayRow, { ...newGatewayRow, sizeLabel: null }] })
+      expect(parsed.results.map((r) => r.sizeLabel)).toEqual(['1.2 GB', null])
+    })
+
+    it('OLD client schema (pre-f88ee163, no sizeLabel, qualityLabel required) parses a NEW gateway response', () => {
+      // Reconstruct the old bundled schema: the current one minus `sizeLabel`. zod strips the
+      // unknown key, so the extra field a new gateway sends is harmless.
+      const oldClientSchema = SearchReleaseSchema.omit({ sizeLabel: true })
+      const parsed = oldClientSchema.parse(newGatewayRow)
+      expect(parsed.qualityLabel).toBe('Unknown')
+      expect(parsed.format.toUpperCase()).toBe('UNKNOWN')
+      expect(parsed).not.toHaveProperty('sizeLabel')
+    })
+
+    it('still requires a non-null string format and a qualityLabel, so an old client never sees null', () => {
+      expect(SearchReleaseSchema.safeParse({ ...oldGatewayRow, format: null }).success).toBe(false)
+      const { qualityLabel: _omitted, ...withoutQuality } = oldGatewayRow
+      expect(SearchReleaseSchema.safeParse(withoutQuality).success).toBe(false)
+    })
   })
 })

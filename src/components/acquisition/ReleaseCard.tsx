@@ -14,6 +14,23 @@ interface ReleaseCardProps {
   className?: string
 }
 
+/**
+ * The wire sends the sentinel 'unknown' for a missing format (an older client may be talking to a
+ * newer gateway and vice versa, so the contract keeps it a non-null string). Treat that, in any
+ * case, and blank, as "no format": the caller renders no pill. `qualityLabel` is never read.
+ * Mirrored in mobile/src/components/ReleaseCard.tsx -- keep the two in step.
+ */
+function meaningfulFormat(format: string | null | undefined): string | null {
+  const trimmed = format?.trim()
+  return trimmed && trimmed.toLowerCase() !== 'unknown' ? trimmed : null
+}
+
+/** `sizeLabel` is absent (undefined) from an older gateway and null/blank when the source had none. */
+function meaningfulText(text: string | null | undefined): string | null {
+  const trimmed = text?.trim()
+  return trimmed ? trimmed : null
+}
+
 function DetailBadge({ children }: { children: React.ReactNode }) {
   return <span className="bg-bg-alt text-foreground-muted inline-flex items-center rounded-md px-2 py-0.5 text-xs whitespace-nowrap">{children}</span>
 }
@@ -24,7 +41,8 @@ export default function ReleaseCard({ release, onAcquire, submitting = false, cl
   const canAcquire = release.requestable && !release.alreadyOwned
   const narrators = release.narrators.join(', ')
   // A real byte count wins; otherwise the source's own size string; otherwise no size pill.
-  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : release.sizeLabel
+  const sizeText = release.sizeBytes != null ? bytesPretty(release.sizeBytes) : meaningfulText(release.sizeLabel)
+  const format = meaningfulFormat(release.format)
 
   return (
     <div className={mergeClasses('bg-bg border-border flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between', className)} cy-id="release-card">
@@ -35,7 +53,7 @@ export default function ReleaseCard({ release, onAcquire, submitting = false, cl
           {narrators ? ` · ${narrators}` : ''}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          {release.format != null && <DetailBadge>{release.format.toUpperCase()}</DetailBadge>}
+          {format != null && <DetailBadge>{format.toUpperCase()}</DetailBadge>}
           {sizeText != null && <DetailBadge>{sizeText}</DetailBadge>}
           {release.durationSeconds != null && <DetailBadge>{formatDuration(release.durationSeconds, t)}</DetailBadge>}
           <DetailBadge>{release.sourceLabel}</DetailBadge>

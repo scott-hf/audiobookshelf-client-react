@@ -18,6 +18,7 @@ function release(overrides: Partial<SearchRelease> = {}): SearchRelease {
     sizeLabel: null,
     durationSeconds: 61200,
     sourceLabel: 'AudioBookBay',
+    qualityLabel: '64kbps',
     seeders: 12,
     coverUrl: null,
     alreadyOwned: false,

@@ -1,3 +1,4 @@
+import { SearchReleaseSchema } from '@abs/acquisition-contract'
 import { describe, expect, it } from 'vitest'
 import { LibrarrSearchResultSchema } from '../adapters/librarrSchemas'
 import { toPublicRelease } from './releaseIdentity'
@@ -12,18 +13,36 @@ function row(fields: Record<string, unknown>) {
 describe('toPublicRelease', () => {
   // The full shape of a live AudioBookBay search row (Tolkien search): the listing carries no
   // format, author, size or seeders -- those exist only on the /abss/ detail page.
-  it('maps a live AudioBookBay row without inventing format, size or a duplicate quality label', () => {
+  it('maps a live AudioBookBay row: legacy sentinels on the wire, provider label, no invented size', () => {
     const release = toPublicRelease(
       row({ indexer: 'AudioBookBay', size_human: '?', in_library: false, score: 55, abb_url: '/abss/the-children-of-hurin-jrr-tolkien/' }),
       RELEASE_ID
     )
 
-    expect(release.format).toBeNull()
+    // The legacy pair stays unfixed on the wire (an older sideloaded client needs both); the
+    // clients suppress the duplicate pills.
+    expect(release.format).toBe('unknown')
+    expect(release.qualityLabel).toBe('Unknown')
     expect(release.sizeBytes).toBeNull()
     expect(release.sizeLabel).toBeNull()
     expect(release.sourceLabel).toBe('AudioBookBay')
     expect(release.requestable).toBe(true)
-    expect(release).not.toHaveProperty('qualityLabel')
+  })
+
+  it('emits the legacy fields AND the additive ones, so old and new clients both work', () => {
+    const release = toPublicRelease(row({ indexer: 'AudioBookBay', format: 'm4b', size_human: ' 1.2 GB ' }), RELEASE_ID)
+
+    expect(release).toMatchObject({ format: 'm4b', qualityLabel: 'M4B', sizeLabel: '1.2 GB', sourceLabel: 'AudioBookBay' })
+    // An old client does `format.toUpperCase()`: it must never see null or undefined.
+    expect(typeof release.format).toBe('string')
+    expect(typeof release.qualityLabel).toBe('string')
+  })
+
+  it('output satisfies the contract schema an old client bundles (minus sizeLabel)', () => {
+    const release = toPublicRelease(row({ indexer: 'AudioBookBay' }), RELEASE_ID)
+
+    expect(SearchReleaseSchema.omit({ sizeLabel: true }).safeParse(release).success).toBe(true)
+    expect(SearchReleaseSchema.safeParse(release).success).toBe(true)
   })
 
   describe('sourceLabel', () => {
@@ -40,13 +59,17 @@ describe('toPublicRelease', () => {
     })
   })
 
-  describe('format', () => {
-    it('is null, not the string "unknown", when the source sends none', () => {
-      expect(toPublicRelease(row({}), RELEASE_ID).format).toBeNull()
+  describe('format and qualityLabel (legacy wire fields)', () => {
+    it('are the sentinels "unknown" / "Unknown", never null, when the source sends no format', () => {
+      const release = toPublicRelease(row({}), RELEASE_ID)
+      expect(release.format).toBe('unknown')
+      expect(release.qualityLabel).toBe('Unknown')
     })
 
-    it('passes a real format through', () => {
-      expect(toPublicRelease(row({ format: 'm4b' }), RELEASE_ID).format).toBe('m4b')
+    it('pass a real format through, with qualityLabel derived from it', () => {
+      const release = toPublicRelease(row({ format: 'm4b' }), RELEASE_ID)
+      expect(release.format).toBe('m4b')
+      expect(release.qualityLabel).toBe('M4B')
     })
   })
 
