@@ -34,7 +34,10 @@ export default function AppTabBar() {
           to={tab.to}
           className={({ isActive }) =>
             mergeClasses(
-              'flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xxs font-medium transition-colors',
+              // text-base is pinned on purpose: this label used to render at the inherited 16px because
+              // mergeClasses dropped `text-xxs`. Fixing that must not shrink the tab bar; choosing a
+              // smaller label (e.g. text-xxs, 10px) is a design call, not a side effect.
+              'flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-base font-medium transition-colors',
               isActive ? 'text-accent bg-nav-item-selected' : 'text-foreground-subdued'
             )
           }
