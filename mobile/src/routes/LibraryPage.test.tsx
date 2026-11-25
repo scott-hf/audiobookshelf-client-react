@@ -95,13 +95,21 @@ function renderMobile(initialPath: string, client: Partial<AbsClient>, downloads
 }
 
 describe('LibrariesPage', () => {
+  // Two book libraries, because a SINGLE one is now auto-selected and never listed (see
+  // LibrariesPage.test.tsx). The point of this test is the podcast filter, so it needs a list
+  // that actually renders.
   it('shows only book libraries', async () => {
     const getLibraries = vi.fn().mockResolvedValue({
-      libraries: [library({ id: 'books', name: 'Books', mediaType: 'book' }), library({ id: 'podcasts', name: 'Podcasts', mediaType: 'podcast' })]
+      libraries: [
+        library({ id: 'books', name: 'Books', mediaType: 'book' }),
+        library({ id: 'more-books', name: 'More Books', mediaType: 'book' }),
+        library({ id: 'podcasts', name: 'Podcasts', mediaType: 'podcast' })
+      ]
     })
     renderMobile('/libraries', { getLibraries })
 
     expect(await screen.findByText('Books')).toBeInTheDocument()
+    expect(screen.getByText('More Books')).toBeInTheDocument()
     expect(screen.queryByText('Podcasts')).not.toBeInTheDocument()
   })
 })

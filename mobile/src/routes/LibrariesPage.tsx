@@ -26,6 +26,16 @@ export default function LibrariesPage() {
     }
   }, [client])
 
+  // Most servers have exactly one book library, and a list with a single row is a tap that
+  // tells the user nothing. Skip straight to it.
+  const soleLibraryId = libraries?.length === 1 ? libraries[0].id : null
+
+  useEffect(() => {
+    // `replace`, not push: otherwise Back from the library lands here and this effect
+    // immediately throws the user forward again, trapping them on the library screen.
+    if (soleLibraryId) navigate(`/library/${encodeURIComponent(soleLibraryId)}`, { replace: true })
+  }, [soleLibraryId, navigate])
+
   if (error)
     return (
       <p role="alert" className="text-error py-10 text-center">
@@ -34,6 +44,9 @@ export default function LibrariesPage() {
     )
   if (!libraries) return <LoadingView label="Loading libraries…" />
   if (libraries.length === 0) return <PageMessage message="No book libraries available." description="Add a book library on your Audiobookshelf server to see it here." />
+  // The redirect above lands on the next render; showing the one-row list in the meantime
+  // would flash a list the user is never meant to see.
+  if (soleLibraryId) return <LoadingView label="Loading libraries…" />
 
   return (
     <>
