@@ -1,5 +1,5 @@
 import type { Acquisition, SearchRelease, SearchResponse } from '@abs/acquisition-contract'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -125,6 +125,88 @@ describe('DiscoverPage slow search', () => {
     unmount()
     expect(abortSignal?.aborted).toBe(true)
   })
+
+  // Search A, Cancel, search B, then A settles. A is no longer the live request, so it must not
+  // touch B's spinner or B's results -- even though this fake (like a response already on the
+  // wire when the abort lands) ignores the signal and resolves anyway.
+  describe('a cancelled search settling after a newer one has started', () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void
+      let reject!: (reason: unknown) => void
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res
+        reject = rej
+      })
+      return { promise, resolve, reject }
+    }
+
+    async function startSearchCancelSearchAgain() {
+      const user = userEvent.setup()
+      const a = deferred<SearchResponse>()
+      const b = deferred<SearchResponse>()
+      const searchAudiobooks = vi.fn().mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise)
+      renderDiscover({ searchAudiobooks, listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+      await user.type(screen.getByLabelText('Search audiobooks'), 'dune')
+      await user.click(screen.getByRole('button', { name: 'Search' }))
+      await user.click(await screen.findByRole('button', { name: 'Cancel search' }))
+      await waitFor(() => expect(screen.queryByTestId('discover-searching')).not.toBeInTheDocument())
+
+      await user.click(screen.getByRole('button', { name: 'Search' }))
+      expect(await screen.findByTestId('discover-searching')).toBeInTheDocument()
+      expect(searchAudiobooks).toHaveBeenCalledTimes(2)
+      return { a, b }
+    }
+
+    it("does not let A's late success replace B's results or hide B's spinner", async () => {
+      const { a, b } = await startSearchCancelSearchAgain()
+
+      a.resolve({ searchSessionId: 'search-a', results: [release({ releaseId: 'rel-a', title: 'Stale Release' })] })
+      // Give A's continuation every chance to run.
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(screen.getByTestId('discover-searching')).toBeInTheDocument()
+      expect(screen.queryByText('Stale Release')).not.toBeInTheDocument()
+
+      b.resolve({ searchSessionId: 'search-b', results: [release({ releaseId: 'rel-b', title: 'Fresh Release' })] })
+
+      expect(await screen.findByText('Fresh Release')).toBeInTheDocument()
+      expect(screen.queryByTestId('discover-searching')).not.toBeInTheDocument()
+      expect(screen.queryByText('Stale Release')).not.toBeInTheDocument()
+    })
+
+    it("does not let A's late failure show an error or hide B's spinner", async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { a, b } = await startSearchCancelSearchAgain()
+
+      a.reject(new Error('indexers fell over'))
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(screen.getByTestId('discover-searching')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(consoleError).not.toHaveBeenCalled()
+
+      b.resolve({ searchSessionId: 'search-b', results: [release({ releaseId: 'rel-b', title: 'Fresh Release' })] })
+      expect(await screen.findByText('Fresh Release')).toBeInTheDocument()
+      consoleError.mockRestore()
+    })
+
+    it("still shows B's own failure", async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { a, b } = await startSearchCancelSearchAgain()
+
+      a.resolve({ searchSessionId: 'search-a', results: [] })
+      b.reject(new Error('indexers fell over'))
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      expect(screen.queryByTestId('discover-searching')).not.toBeInTheDocument()
+      consoleError.mockRestore()
+    })
+  })
 })
 
 describe('DiscoverPage', () => {
@@ -158,10 +240,13 @@ describe('DiscoverPage', () => {
     )
   })
 
-  it('explains before any search that acquiring is server-side and offline listening needs a device download', () => {
+  it('explains before any search that acquiring is server-side and offline listening needs a device download', async () => {
     renderDiscover({ searchAudiobooks: vi.fn(), createAcquisition: vi.fn(), listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
 
-    const explainer = screen.getByTestId('discover-explainer')
+    // Awaited rather than read synchronously: the page now also resolves the Browse capability
+    // check on mount, and a synchronous assertion would finish the test while that setState was
+    // still pending -- which React reports as an update outside act().
+    const explainer = await screen.findByTestId('discover-explainer')
     expect(explainer).toHaveTextContent(/server/i)
     expect(explainer).toHaveTextContent(/download it to your device/i)
     expect(explainer).toHaveTextContent(/offline/i)

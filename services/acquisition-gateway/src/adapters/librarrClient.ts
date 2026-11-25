@@ -1,5 +1,9 @@
 import { z } from 'zod'
+import type { DiscoverItem, DiscoverOption } from '@abs/acquisition-contract'
 import {
+  LibrarrDiscoverBrowseResponseSchema,
+  LibrarrDiscoverOptionsResponseSchema,
+  type LibrarrDiscoverStatus,
   LibrarrSearchResponseSchema,
   LibrarrSubmitResponseSchema,
   LibrarrDownloadsResponseSchema,
@@ -48,12 +52,27 @@ export class LibrarrTimeoutError extends LibrarrApiError {
 export const LIBRARR_SEARCH_TIMEOUT_MS = 10_000
 export const LIBRARR_REQUEST_TIMEOUT_MS = 5_000
 
+/**
+ * Budget for `GET /api/discover/browse`, which proxies Open Library.
+ *
+ * Measured against the live server: 12 browse samples ranged 0.22s to 11.7s (the fast ones are
+ * Librarr's own cache), and direct Open Library calls stall for up to 37s. Librarr's own HTTP
+ * client to Open Library gives up at 15s and answers `upstream_unavailable` -- as a real HTTP 200
+ * body. This budget is deliberately past that 15s ceiling so Librarr's own verdict reaches us as an
+ * answer ("Open Library is down", 502 `discover_upstream_unavailable`) instead of as OUR timeout,
+ * which would be indistinguishable from Librarr itself being unreachable. A successful 11.7s
+ * response is real, so do not "optimise" this back toward the 5s/10s budgets above.
+ */
+export const LIBRARR_BROWSE_TIMEOUT_MS = 20_000
+
 export interface LibrarrClientOptions {
   baseUrl: string
   apiKey: string
   fetcher?: typeof fetch
   /** Budget for the audiobook search. Defaults to LIBRARR_SEARCH_TIMEOUT_MS. */
   searchTimeoutMs?: number
+  /** Budget for discover browse. Defaults to LIBRARR_BROWSE_TIMEOUT_MS. */
+  browseTimeoutMs?: number
   /** Budget for every other call. Defaults to LIBRARR_REQUEST_TIMEOUT_MS. */
   timeoutMs?: number
 }
@@ -73,11 +92,40 @@ function classifyError(status: number, body: unknown): string {
 
 const successSchema = z.object({ success: z.boolean() })
 
+/** `GET /api/discover/options`, with unusable (blank id or label) entries dropped. */
+export interface LibrarrDiscoverOptions {
+  catalogs: DiscoverOption[]
+  genres: DiscoverOption[]
+}
+
+/**
+ * A browse answer in camelCase, with the item quirks normalised, but otherwise exactly what
+ * Librarr said -- including its failure statuses. Turning `upstream_unavailable` and
+ * `rate_limited` into HTTP errors is the route's job, not the adapter's.
+ */
+export interface LibrarrDiscoverBrowse {
+  status: LibrarrDiscoverStatus
+  /** Librarr's human-readable reason; `''` on a success. */
+  error: string
+  /** Librarr's echo of the request. `undefined` when it did not send one (always, on an outage). */
+  catalog?: string
+  genre?: string
+  offset?: number
+  /** `null` = last page. Failure statuses are always `null`. NOT yet validated against the
+   * request offset -- that needs the request, so the route does it. */
+  nextOffset: number | null
+  partial: boolean
+  items: DiscoverItem[]
+  /** Raw `Retry-After` header of Librarr's response, if any (meaningful for `rate_limited`). */
+  retryAfter: string | null
+}
+
 export class LibrarrClient {
   private readonly baseUrl: string
   private readonly apiKey: string
   private readonly fetcher: typeof fetch
   private readonly searchTimeoutMs: number
+  private readonly browseTimeoutMs: number
   private readonly timeoutMs: number
 
   constructor(options: LibrarrClientOptions) {
@@ -85,6 +133,7 @@ export class LibrarrClient {
     this.apiKey = options.apiKey
     this.fetcher = options.fetcher ?? fetch
     this.searchTimeoutMs = options.searchTimeoutMs ?? LIBRARR_SEARCH_TIMEOUT_MS
+    this.browseTimeoutMs = options.browseTimeoutMs ?? LIBRARR_BROWSE_TIMEOUT_MS
     this.timeoutMs = options.timeoutMs ?? LIBRARR_REQUEST_TIMEOUT_MS
   }
 
@@ -97,6 +146,16 @@ export class LibrarrClient {
     init: RequestInit = {},
     timeoutMs: number = this.timeoutMs
   ): Promise<T> {
+    return (await this.requestWithHeaders(path, schema, init, timeoutMs)).data
+  }
+
+  /** `request`, but also hands back the response headers for the callers that need one. */
+  private async requestWithHeaders<T>(
+    path: string,
+    schema: { parse: (data: unknown) => T },
+    init: RequestInit = {},
+    timeoutMs: number = this.timeoutMs
+  ): Promise<{ data: T; headers: Headers }> {
     const headers = new Headers(init.headers)
     headers.set('x-api-key', this.apiKey)
     // The deadline covers connecting, headers and the body read, so a Librarr that accepts the
@@ -107,10 +166,13 @@ export class LibrarrClient {
       timedOut = true
       controller.abort()
     }, timeoutMs)
+    // A caller's own signal (its client went away) is combined with the deadline, not replaced by it.
+    const callerSignal = init.signal ?? undefined
+    const signal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal
     let response: Response
     let body: unknown = null
     try {
-      response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers, signal: controller.signal })
+      response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers, signal })
       try {
         body = await response.json()
       } catch {
@@ -124,6 +186,9 @@ export class LibrarrClient {
     }
     // A body read cut off by the deadline lands in the inner catch as `null`; it is still a timeout.
     if (timedOut) throw new LibrarrTimeoutError(path, timeoutMs)
+    // Likewise a body read cut off by the caller: surface the abort (an AbortError, never a
+    // TypeError) instead of letting the swallowed read fall through to schema parsing.
+    if (callerSignal?.aborted) throw callerSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
     if (!response.ok) {
       const code = classifyError(response.status, body)
       const message =
@@ -132,7 +197,7 @@ export class LibrarrClient {
           : `Librarr request failed with status ${response.status}`
       throw new LibrarrApiError(response.status, code, message)
     }
-    return schema.parse(body)
+    return { data: schema.parse(body), headers: response.headers }
   }
 
   async searchAudiobooks(query: string): Promise<LibrarrSearchResult[]> {
@@ -143,6 +208,59 @@ export class LibrarrClient {
       this.searchTimeoutMs
     )
     return response.results
+  }
+
+  /** GET /api/discover/options -- the catalogs and genres the browse screen can offer. */
+  async getDiscoverOptions(): Promise<LibrarrDiscoverOptions> {
+    const response = await this.request('/api/discover/options', LibrarrDiscoverOptionsResponseSchema)
+    if (response.status !== 'ok') {
+      throw new LibrarrApiError(502, 'librarr_error', response.error || `Librarr discover options returned status ${response.status}`)
+    }
+    const usable = (option: DiscoverOption) => option.id.length > 0 && option.label.length > 0
+    return { catalogs: response.catalogs.filter(usable), genres: response.genres.filter(usable) }
+  }
+
+  /**
+   * GET /api/discover/browse. Resolves with Librarr's answer whatever its `status` -- Librarr
+   * reports an Open Library outage as an HTTP 200 body, and that body must parse (see
+   * LibrarrDiscoverBrowseResponseSchema). `genre` is omitted from the query when empty, never
+   * sent as `genre=`. Uses the long browse budget, not the 5s default (LIBRARR_BROWSE_TIMEOUT_MS).
+   */
+  async browseDiscover(
+    catalog: string,
+    genre: string | undefined,
+    offset: number,
+    /** Aborts the Librarr request when the caller goes away; rejects with an AbortError. */
+    signal?: AbortSignal
+  ): Promise<LibrarrDiscoverBrowse> {
+    const query = new URLSearchParams({ catalog })
+    if (genre) query.set('genre', genre)
+    query.set('offset', String(offset))
+    const { data, headers } = await this.requestWithHeaders(
+      `/api/discover/browse?${query}`,
+      LibrarrDiscoverBrowseResponseSchema,
+      signal ? { signal } : {},
+      this.browseTimeoutMs
+    )
+    const succeeded = data.status === 'ok' || data.status === 'empty'
+    return {
+      status: data.status,
+      error: data.error,
+      catalog: data.catalog,
+      genre: data.genre,
+      offset: data.offset,
+      nextOffset: succeeded ? (data.next_offset ?? null) : null,
+      partial: data.partial,
+      items: data.items.map((item) => ({
+        key: item.key,
+        title: item.title,
+        author: item.author ?? '',
+        coverUrl: item.cover_url ? item.cover_url : null,
+        year: Number.isInteger(item.year) && (item.year as number) > 0 ? (item.year as number) : null,
+        popularity: Number.isInteger(item.popularity) ? (item.popularity as number) : null
+      })),
+      retryAfter: headers.get('retry-after')
+    }
   }
 
   /**

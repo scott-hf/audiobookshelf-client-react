@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "error": "",
+  "catalogs": [
+    { "id": "popular", "label": "Popular" },
+    { "id": "new", "label": "New" },
+    { "id": "top_rated", "label": "Top rated" }
+  ],
+  "genres": [
+    { "id": "biography", "label": "Biography" },
+    { "id": "children's", "label": "Children's" },
+    { "id": "fantasy", "label": "Fantasy" },
+    { "id": "historical fiction", "label": "Historical fiction" },
+    { "id": "science fiction", "label": "Science fiction" },
+    { "id": "self-help", "label": "Self-help" }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "status": "ok",
+  "error": "",
+  "catalog": "popular",
+  "genre": "",
+  "offset": 0,
+  "next_offset": 20,
+  "partial": false,
+  "items": [
+    {
+      "key": "/works/OL17930368W",
+      "title": "Atomic Habits",
+      "author": "James Clear",
+      "cover_url": "https://covers.openlibrary.org/b/id/12539702-M.jpg",
+      "year": 2016,
+      "popularity": 66698
+    },
+    {
+      "key": "/works/OL000001W",
+      "title": "A Book With No Cover Or Year",
+      "author": "Anonymous",
+      "cover_url": "",
+      "year": 0,
+      "popularity": 12
+    }
+  ]
+}

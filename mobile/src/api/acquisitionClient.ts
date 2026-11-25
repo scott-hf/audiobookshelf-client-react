@@ -48,6 +48,11 @@ export function createMobileAcquisitionClient(session: SessionStore, fetcher?: t
   return {
     status: withSessionRefreshRetry(session, baseClient.status),
     searchAudiobooks: withSessionRefreshRetry(session, baseClient.searchAudiobooks),
+    // The caller's AbortSignal travels inside `args` (the RequestOptions argument), and the
+    // wrapper replays the very same `args` on the post-refresh retry, so a selection change that
+    // aborts the first attempt still aborts the retry.
+    getDiscoverOptions: withSessionRefreshRetry(session, baseClient.getDiscoverOptions),
+    browseDiscover: withSessionRefreshRetry(session, baseClient.browseDiscover),
     createAcquisition: withSessionRefreshRetry(session, baseClient.createAcquisition),
     listAcquisitions: withSessionRefreshRetry(session, baseClient.listAcquisitions),
     getAcquisition: withSessionRefreshRetry(session, baseClient.getAcquisition),
@@ -68,7 +73,19 @@ const GATEWAY_ERROR_MESSAGES: Record<string, string> = {
   acquisition_not_found: 'That acquisition could not be found.',
   acquisition_not_retryable: 'That acquisition cannot be retried.',
   acquisition_not_cancellable: 'That acquisition cannot be cancelled.',
-  gateway_not_ready: 'The acquisition gateway is not ready yet.'
+  gateway_not_ready: 'The acquisition gateway is not ready yet.',
+  // Matched by code before the generic 404/5xx branches below, so a `discover_not_supported` 404
+  // is never reported as "the acquisition service is not available on this server".
+  discover_upstream_unavailable: 'Open Library is temporarily unavailable. Search still works.',
+  discover_rate_limited: 'Too many requests to Open Library. Try again in a minute.',
+  discover_not_supported: 'Book suggestions are not available on this server.',
+  // The gateway fails closed on a Librarr reply it cannot parse (e.g. an unknown `status`).
+  discover_bad_response: 'Book suggestions could not be loaded.',
+  // Gateway-wide Librarr failures, shared by search, acquisitions and Discover, so the copy names
+  // neither the feature nor the component behind it. A timeout is the likeliest real failure.
+  librarr_timeout: 'The server took too long to answer. Try again.',
+  librarr_unreachable: 'The server could not reach a service it depends on. Try again in a moment.',
+  librarr_error: 'The server could not complete that request. Try again.'
 }
 
 /**

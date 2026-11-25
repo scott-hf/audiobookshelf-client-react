@@ -116,6 +116,94 @@ export const LibrarrLibraryResponseSchema = z
   })
   .passthrough()
 
+// Librarr's Open Library discover routes (`GET /api/discover/options` and
+// `GET /api/discover/browse`), measured against the live server rather than any doc.
+//
+// Both routes answer HTTP 200 for every outcome and carry the real result in `status`, one of
+// `ok | empty | upstream_unavailable | rate_limited | invalid_request`. The failure bodies are NOT
+// the success body with an empty list: an outage arrives as `{status, error, items: []}` with no
+// paging cursor. A single success-shaped schema therefore cannot parse an outage -- it throws a
+// ZodError that looks like a gateway bug rather than "Open Library is down".
+//
+// The echo (`catalog`/`genre`/`offset`) is OPTIONAL rather than absent-on-failure: a live
+// `upstream_unavailable` was measured (2026-11-25) carrying all three. It is also verbatim -- a
+// genre id goes out and comes back byte for byte, spaces and apostrophes included
+// (`"historical fiction"`), and a request with no genre echoes `""`. That is what lets
+// `routes/discover.ts` treat a mismatched echo as a bad response instead of serving a page that
+// answers a different question.
+
+export const LibrarrDiscoverOptionSchema = z.object({
+  id: z.string(),
+  label: z.string()
+})
+
+export const LibrarrDiscoverOptionsResponseSchema = z.object({
+  // Measured `"ok"`. Tolerated as absent so a Librarr that drops the envelope still parses.
+  status: z.string().optional().default('ok'),
+  error: z.string().optional().default(''),
+  catalogs: z.array(LibrarrDiscoverOptionSchema),
+  genres: z.array(LibrarrDiscoverOptionSchema)
+})
+
+export const LibrarrDiscoverItemSchema = z.object({
+  // Open Library work key, e.g. `/works/OL17930368W`.
+  key: z.string(),
+  title: z.string(),
+  author: z.string().nullish(),
+  // `""` when Open Library has no cover (the mapper turns it into null).
+  cover_url: z.string().nullish(),
+  // 0 means unknown (the mapper turns it into null).
+  year: z.number().nullish(),
+  popularity: z.number().nullish()
+})
+
+// Every field Librarr echoes back from the request. Present on a success, absent on a failure.
+const discoverEchoShape = {
+  error: z.string().optional().default(''),
+  catalog: z.string().optional(),
+  genre: z.string().optional(),
+  offset: z.number().int().optional(),
+  partial: z.boolean().optional().default(false)
+}
+
+/**
+ * Raw `GET /api/discover/browse` body, decoded by `status` FIRST.
+ *
+ * A discriminated union rather than one object with everything optional, because the two arms
+ * genuinely differ in what they promise:
+ *  - `ok` / `empty`: the shelf was read, so `items` is a required array and `next_offset` is
+ *    the paging cursor (`null` = last page).
+ *  - `upstream_unavailable` / `rate_limited` / `invalid_request`: no shelf was read, so `items` is
+ *    whatever Librarr put there (measured `[]`; a Go nil slice would be `null`, which is tolerated
+ *    and normalised to `[]`) and nothing else is promised -- the echoed fields are optional.
+ * One optional-everything object would also parse an `ok` body missing its `items`, silently
+ * rendering an empty shelf; the union makes that a parse error.
+ *
+ * A status Librarr adds in future is not in either arm and fails to parse on purpose: the gateway
+ * must not guess whether an unknown status is a success.
+ */
+export const LibrarrDiscoverBrowseResponseSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.enum(['ok', 'empty']),
+    ...discoverEchoShape,
+    // Absent is treated as `null` (end of paging): the safe direction, it can never loop a client.
+    next_offset: z.number().int().nullish(),
+    items: z.array(LibrarrDiscoverItemSchema)
+  }),
+  z.object({
+    status: z.enum(['upstream_unavailable', 'rate_limited', 'invalid_request']),
+    ...discoverEchoShape,
+    next_offset: z.number().int().nullish(),
+    items: z
+      .array(LibrarrDiscoverItemSchema)
+      .nullish()
+      .transform((items) => items ?? [])
+  })
+])
+
+export type LibrarrDiscoverBrowseRaw = z.infer<typeof LibrarrDiscoverBrowseResponseSchema>
+export type LibrarrDiscoverStatus = LibrarrDiscoverBrowseRaw['status']
+
 export type LibrarrLibraryItem = z.infer<typeof LibrarrLibraryItemSchema>
 
 export type LibrarrSearchResult = z.infer<typeof LibrarrSearchResultSchema>

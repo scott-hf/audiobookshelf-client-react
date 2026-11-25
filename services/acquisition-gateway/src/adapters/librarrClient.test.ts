@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { LibrarrApiError, LibrarrClient, LibrarrTimeoutError } from './librarrClient'
+import { LIBRARR_BROWSE_TIMEOUT_MS, LibrarrApiError, LibrarrClient, LibrarrTimeoutError } from './librarrClient'
 
 const FIXTURES = path.join(__dirname, '..', '..', 'test', 'fixtures', 'librarr')
 const searchFixture = JSON.parse(readFileSync(path.join(FIXTURES, 'search-audiobooks.json'), 'utf-8'))
@@ -106,6 +106,182 @@ describe('LibrarrClient', () => {
       }) as unknown as typeof fetch
     })
     await expect(down.health()).resolves.toBe(false)
+  })
+
+  describe('discover', () => {
+    const optionsFixture = JSON.parse(readFileSync(path.join(FIXTURES, 'discover-options.json'), 'utf-8'))
+    const browseFixture = JSON.parse(readFileSync(path.join(FIXTURES, 'discover-browse.json'), 'utf-8'))
+    const outageFixture = JSON.parse(readFileSync(path.join(FIXTURES, 'discover-browse-upstream-unavailable.json'), 'utf-8'))
+    const make = (fetcher: typeof fetch, extra: { browseTimeoutMs?: number } = {}) =>
+      new LibrarrClient({ baseUrl: 'http://librarr:5050', apiKey: 'secret', fetcher, ...extra })
+    const lastUrl = (fetcher: typeof fetch) => new URL(String((fetcher as ReturnType<typeof vi.fn>).mock.calls[0][0]))
+
+    it('parses the options and sends the api key', async () => {
+      const fetcher = fixtureFetch('/api/discover/options', optionsFixture)
+      const options = await make(fetcher).getDiscoverOptions()
+
+      expect(options.catalogs.map((c) => c.id)).toEqual(['popular', 'new', 'top_rated'])
+      expect(options.genres).toContainEqual({ id: "children's", label: "Children's" })
+      expect(options.genres).toContainEqual({ id: 'science fiction', label: 'Science fiction' })
+      const [, init] = (fetcher as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect((init.headers as Headers).get('x-api-key')).toBe('secret')
+    })
+
+    it('maps a browse success from snake_case to camelCase and normalises cover and year', async () => {
+      const fetcher = fixtureFetch('/api/discover/browse', browseFixture)
+      const page = await make(fetcher).browseDiscover('popular', undefined, 0)
+
+      expect(page).toMatchObject({ status: 'ok', catalog: 'popular', genre: '', offset: 0, nextOffset: 20, partial: false })
+      expect(page.items[0]).toEqual({
+        key: '/works/OL17930368W',
+        title: 'Atomic Habits',
+        author: 'James Clear',
+        coverUrl: 'https://covers.openlibrary.org/b/id/12539702-M.jpg',
+        year: 2016,
+        popularity: 66698
+      })
+      // cover_url "" -> null, year 0 -> null
+      expect(page.items[1]).toMatchObject({ coverUrl: null, year: null })
+      const [, init] = (fetcher as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect((init.headers as Headers).get('x-api-key')).toBe('secret')
+    })
+
+    it('parses the outage body, which has no echoed query fields, without throwing', async () => {
+      const fetcher = fixtureFetch('/api/discover/browse', outageFixture)
+      const page = await make(fetcher).browseDiscover('popular', undefined, 0)
+
+      expect(page).toMatchObject({
+        status: 'upstream_unavailable',
+        error: 'Open Library is unavailable',
+        nextOffset: null,
+        items: [],
+        catalog: undefined,
+        genre: undefined,
+        offset: undefined
+      })
+    })
+
+    it('parses a failure body whose items is null and whose next_offset is null', async () => {
+      const body = { status: 'rate_limited', error: 'slow down', catalog: 'popular', genre: '', offset: 0, next_offset: null, partial: false, items: null }
+      const page = await make(fixtureFetch('/api/discover/browse', body)).browseDiscover('popular', undefined, 0)
+      expect(page).toMatchObject({ status: 'rate_limited', nextOffset: null, items: [] })
+    })
+
+    it('rejects an ok body that has no items array rather than showing an empty shelf', async () => {
+      const body = { status: 'ok', error: '', catalog: 'popular', genre: '', offset: 0, next_offset: null, partial: false }
+      await expect(make(fixtureFetch('/api/discover/browse', body)).browseDiscover('popular', undefined, 0)).rejects.toThrow()
+    })
+
+    it('surfaces Retry-After from the response headers', async () => {
+      const fetcher = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ status: 'rate_limited', error: 'slow down', items: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'retry-after': '30' }
+          })
+      ) as unknown as typeof fetch
+      const page = await make(fetcher).browseDiscover('popular', undefined, 0)
+      expect(page.retryAfter).toBe('30')
+    })
+
+    it('keeps an ok page with a short item list and a non-null next_offset (a short page is not the last)', async () => {
+      const body = { ...browseFixture, genre: 'science fiction', items: browseFixture.items.slice(0, 1), next_offset: 20 }
+      const page = await make(fixtureFetch('/api/discover/browse', body)).browseDiscover('popular', 'science fiction', 0)
+      expect(page.items).toHaveLength(1)
+      expect(page.nextOffset).toBe(20)
+    })
+
+    it('omits genre from the query when it is empty or undefined, and encodes it when present', async () => {
+      const none = fixtureFetch('/api/discover/browse', browseFixture)
+      await make(none).browseDiscover('popular', undefined, 0)
+      expect(lastUrl(none).searchParams.has('genre')).toBe(false)
+      expect(String((none as ReturnType<typeof vi.fn>).mock.calls[0][0])).not.toContain('genre=')
+
+      const blank = fixtureFetch('/api/discover/browse', browseFixture)
+      await make(blank).browseDiscover('popular', '', 0)
+      expect(String((blank as ReturnType<typeof vi.fn>).mock.calls[0][0])).not.toContain('genre')
+
+      const some = fixtureFetch('/api/discover/browse', browseFixture)
+      await make(some).browseDiscover('new', "children's", 40)
+      const url = lastUrl(some)
+      expect(url.searchParams.get('catalog')).toBe('new')
+      expect(url.searchParams.get('genre')).toBe("children's")
+      expect(url.searchParams.get('offset')).toBe('40')
+    })
+
+    it('surfaces an old Librarr 404 as a LibrarrApiError with status 404', async () => {
+      const fetcher = fixtureFetch('/api/discover/browse', { error: 'not found' }, 404)
+      await expect(make(fetcher).browseDiscover('popular', undefined, 0)).rejects.toMatchObject({ status: 404 })
+    })
+
+    it('throws LibrarrTimeoutError for a slow browse, using its own budget rather than the 5s default', async () => {
+      const hanging = vi.fn(
+        (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+          })
+      ) as unknown as typeof fetch
+      const error = await make(hanging, { browseTimeoutMs: 20 }).browseDiscover('popular', undefined, 0).catch((e) => e)
+      expect(error).toBeInstanceOf(LibrarrTimeoutError)
+      expect(error).toMatchObject({ code: 'librarr_timeout', timeoutMs: 20 })
+    })
+
+    it('surfaces a transport-level 429 as a LibrarrApiError with status 429', async () => {
+      const fetcher = fixtureFetch('/api/discover/browse', { error: 'slow down' }, 429)
+      await expect(make(fetcher).browseDiscover('popular', undefined, 0)).rejects.toMatchObject({ status: 429, code: 'librarr_error' })
+    })
+
+    it('aborts the Librarr request with an AbortError when the caller signal fires, not a timeout or TypeError', async () => {
+      let seen: AbortSignal | undefined
+      const hanging = vi.fn(
+        (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            seen = init?.signal ?? undefined
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+          })
+      ) as unknown as typeof fetch
+      const caller = new AbortController()
+      const pending = make(hanging).browseDiscover('popular', undefined, 0, caller.signal).catch((e) => e)
+      expect(seen?.aborted).toBe(false)
+      caller.abort()
+      const error = await pending
+      expect(seen?.aborted).toBe(true)
+      expect(error).toBeInstanceOf(DOMException)
+      expect(error).toMatchObject({ name: 'AbortError' })
+      expect(error).not.toBeInstanceOf(LibrarrTimeoutError)
+      expect(error).not.toBeInstanceOf(TypeError)
+    })
+
+    it('treats a caller abort during the body read as an abort, not a bad response', async () => {
+      const caller = new AbortController()
+      const fetcher = vi.fn(async () => {
+        const response = new Response('{', { status: 200, headers: { 'content-type': 'application/json' } })
+        caller.abort()
+        return response
+      }) as unknown as typeof fetch
+      const error = await make(fetcher).browseDiscover('popular', undefined, 0, caller.signal).catch((e) => e)
+      expect(error).toMatchObject({ name: 'AbortError' })
+    })
+
+    it('defaults the browse budget to 20s, past the 5s default and Librarr’s own 15s ceiling', async () => {
+      expect(LIBRARR_BROWSE_TIMEOUT_MS).toBe(20_000)
+      vi.useFakeTimers()
+      try {
+        const hanging = vi.fn(
+          (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+            })
+        ) as unknown as typeof fetch
+        const pending = make(hanging).browseDiscover('popular', undefined, 0).catch((e) => e)
+        await vi.advanceTimersByTimeAsync(19_999)
+        expect(await Promise.race([pending, 'pending'])).toBe('pending')
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await pending).toMatchObject({ code: 'librarr_timeout', timeoutMs: 20_000 })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('deadlines', () => {

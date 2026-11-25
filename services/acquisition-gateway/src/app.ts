@@ -4,6 +4,7 @@ import type { GatewayConfig } from './config'
 import { createAbsAuth, validateAbsUser, type AbsUser } from './auth/absAuth'
 import { registerStatusRoute } from './routes/status'
 import { registerSearchRoute } from './routes/search'
+import { registerDiscoverRoutes } from './routes/discover'
 import { registerAcquisitionsRoutes } from './routes/acquisitions'
 import { registerEventsRoute } from './routes/events'
 import { openDatabase } from './db/database'
@@ -193,6 +194,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   registerStatusRoute(app, options.config, fetcher)
   registerSearchRoute(app, searchService)
+  registerDiscoverRoutes(app, librarr)
   registerAcquisitionsRoutes(app, acquisitionService, eventBus, () => ready)
   registerEventsRoute(app, eventBus)
 

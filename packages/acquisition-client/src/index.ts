@@ -1,4 +1,10 @@
-import type { Acquisition, CreateAcquisitionBody, SearchResponse } from '@abs/acquisition-contract'
+import type {
+  Acquisition,
+  CreateAcquisitionBody,
+  DiscoverBrowseResponse,
+  DiscoverOptionsResponse,
+  SearchResponse
+} from '@abs/acquisition-contract'
 
 export class AcquisitionApiError extends Error {
   constructor(
@@ -30,6 +36,12 @@ export const DEFAULT_TIMEOUT_MS = 15_000
  * succeed. Still finite, so a dead indexer cannot hang the UI. */
 export const SEARCH_TIMEOUT_MS = 45_000
 
+/** Browsing book suggestions goes gateway -> Librarr -> Open Library. The gateway allows 20s for
+ * Librarr alone (Librarr itself gives up on Open Library at 15s), and Open Library has been
+ * measured stalling past 35s, so a tighter deadline here would abort requests that were about to
+ * succeed or about to come back as a proper `discover_upstream_unavailable`. Still finite. */
+export const BROWSE_TIMEOUT_MS = 45_000
+
 export interface AcquisitionStatusResponse {
   version: string
   ready: boolean
@@ -54,6 +66,8 @@ export interface AcquisitionClientOptions {
   timeoutMs?: number
   /** Deadline for `searchAudiobooks`; see SEARCH_TIMEOUT_MS. */
   searchTimeoutMs?: number
+  /** Deadline for `browseDiscover`; see BROWSE_TIMEOUT_MS. */
+  browseTimeoutMs?: number
 }
 
 interface RequestOptions {
@@ -121,6 +135,13 @@ export function createAcquisitionClient(options: AcquisitionClientOptions) {
     status: (requestOptions?: RequestOptions) => request<AcquisitionStatusResponse>('/status', {}, requestOptions),
     searchAudiobooks: (libraryId: string, q: string, requestOptions: RequestOptions = {}) =>
       request<SearchResponse>(`/search/audiobooks?${new URLSearchParams({ libraryId, q })}`, {}, { timeoutMs: options.searchTimeoutMs ?? SEARCH_TIMEOUT_MS, ...requestOptions }),
+    getDiscoverOptions: (requestOptions: RequestOptions = {}) => request<DiscoverOptionsResponse>('/discover/options', {}, requestOptions),
+    browseDiscover: (params: { catalog: string; genre?: string; offset?: number }, requestOptions: RequestOptions = {}) => {
+      const query = new URLSearchParams({ catalog: params.catalog })
+      if (params.genre) query.set('genre', params.genre)
+      if (params.offset !== undefined) query.set('offset', String(params.offset))
+      return request<DiscoverBrowseResponse>(`/discover/browse?${query}`, {}, { timeoutMs: options.browseTimeoutMs ?? BROWSE_TIMEOUT_MS, ...requestOptions })
+    },
     createAcquisition: (libraryId: string, body: CreateAcquisitionBody) =>
       request<Acquisition>(`/acquisitions?${new URLSearchParams({ libraryId })}`, {
         method: 'POST',
