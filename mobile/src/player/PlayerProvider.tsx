@@ -329,7 +329,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return { sessionId: session.id, sync: createNativeProgressSync(client, session.id), serverCurrentTime: session.currentTime }
     } catch {
       // No network / server unreachable -- expected for offline playback. Play unsynced.
-      return { sessionId: itemId, sync: null, serverCurrentTime: null }
+      // Prefixed so it can never equal the library item id: the recovery effect adopts the native
+      // session id as `state.itemId`, and PlayerPage skips play() when `state.itemId === itemId`,
+      // which left a recovered offline session as a dead player on the next cold start.
+      return { sessionId: `offline:${itemId}`, sync: null, serverCurrentTime: null }
     }
   }
 
@@ -553,7 +556,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const value = useMemo<PlayerContextValue>(
     () => ({ state: visibleState, stalled, rate, play, pause, resume, seek, close, setRate, jumpForward, jumpBackward, setSleepTimer, connectCast, isCasting }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleState, stalled, rate, htmlPlayer, nativePlayer, castHandoff, client]
+    [visibleState, stalled, rate, htmlPlayer, nativePlayer, castHandoff, client, localItems]
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

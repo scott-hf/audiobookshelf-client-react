@@ -757,6 +757,19 @@ Per-task status (commits on `feature/mobile-acquisition-stack`, all local, none 
   interval, pause triggers an immediate sync + timer stop, seek does NOT sync, item
   replacement closes the previous session first. `PlayerProvider` uses `@capacitor/app`'s
   `appStateChange` listener to `close()` (not just pause) on app background per the spec.
+  **SUPERSEDED (product decision, mobile native player):** audio now keeps playing when the app
+  is backgrounded (home button, screen lock, app switcher) and stops only when the app is exited
+  (task swiped from recents). Reason: audiobooks are listened to with the screen off, and the
+  native `PlayerNotificationService` is already a `mediaPlayback` foreground service, so closing
+  on background cut off exactly the use case the app exists for. Consequences, all in the code:
+  on `isActive === false` `PlayerProvider` calls `NativeProgressSync.flush()` (a backgrounded
+  WebView's timers are throttled/suspended, so the 15s interval cannot be relied on); on
+  `isActive === true` it re-reads `AbsAudioPlayerNative.getState()` to catch the UI up on the
+  ticks missed while frozen; native `onTaskRemoved` persists the final position to
+  `PlaybackStateStore` and stops the service (the WebView is gone by then, so JS cannot sync);
+  and an item replacement now calls `stop({ keepForeground: true })` so the foreground service is
+  never dropped and re-entered while backgrounded (Android 12+ can refuse that). The web
+  `HtmlAudioPlayer` path no longer closes on visibility change either.
   `PlayerPage` wired at `/library/:libraryId/item/:itemId/play`.
 - Task 5 (Discover + acquisition queue) -- NOT STARTED. Reference material already read this
   session (don't re-read, just port): `src/contexts/AcquisitionContext.tsx` (SSE +10s-poll-

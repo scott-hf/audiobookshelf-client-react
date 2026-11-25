@@ -136,8 +136,9 @@ describe('PlayerProvider offline resume', () => {
     })
 
     expect(loadedStartTime()).toBe(500)
-    // Unsynced fallback keeps using the item id as the session id.
-    expect((nativePlugin.load.mock.calls[0][0] as { session: { id: string } }).session.id).toBe('b1')
+    // Unsynced fallback derives a session id from the item id, but must never equal it (a recovered
+    // session would otherwise be mistaken for "already loaded" by PlayerPage).
+    expect((nativePlugin.load.mock.calls[0][0] as { session: { id: string } }).session.id).toBe('offline:b1')
   })
 
   it('starts at 0 with neither a server session nor a local record', async () => {
