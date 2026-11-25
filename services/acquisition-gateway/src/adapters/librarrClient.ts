@@ -22,10 +22,40 @@ export class LibrarrApiError extends Error {
   }
 }
 
+/**
+ * Thrown when Librarr does not answer within the call's budget. Distinct from a Librarr error
+ * response (`code: 'librarr_timeout'`, never `librarr_error`) so callers can tell "slow or
+ * unreachable" from "Librarr said no". It is a LibrarrApiError so existing instanceof checks keep
+ * working; status 504 is synthetic -- no HTTP status was received.
+ */
+export class LibrarrTimeoutError extends LibrarrApiError {
+  constructor(
+    path: string,
+    public timeoutMs: number
+  ) {
+    // The query string is dropped: it can carry the user's search text.
+    super(504, 'librarr_timeout', `Librarr did not respond within ${timeoutMs}ms (${path.split('?')[0]})`)
+    this.name = 'LibrarrTimeoutError'
+  }
+}
+
+/**
+ * Librarr fans a search out to several upstream sources, so it gets the longer budget. Healthy
+ * searches take ~1-2s and Librarr itself caps each source at 6s, so 10s covers a search with one
+ * dead source while still failing fast enough to keep the UI usable. Every other call is a local
+ * DB read or a single torrent-client call and gets the shorter budget.
+ */
+export const LIBRARR_SEARCH_TIMEOUT_MS = 10_000
+export const LIBRARR_REQUEST_TIMEOUT_MS = 5_000
+
 export interface LibrarrClientOptions {
   baseUrl: string
   apiKey: string
   fetcher?: typeof fetch
+  /** Budget for the audiobook search. Defaults to LIBRARR_SEARCH_TIMEOUT_MS. */
+  searchTimeoutMs?: number
+  /** Budget for every other call. Defaults to LIBRARR_REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number
 }
 
 /**
@@ -47,26 +77,53 @@ export class LibrarrClient {
   private readonly baseUrl: string
   private readonly apiKey: string
   private readonly fetcher: typeof fetch
+  private readonly searchTimeoutMs: number
+  private readonly timeoutMs: number
 
   constructor(options: LibrarrClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '')
     this.apiKey = options.apiKey
     this.fetcher = options.fetcher ?? fetch
+    this.searchTimeoutMs = options.searchTimeoutMs ?? LIBRARR_SEARCH_TIMEOUT_MS
+    this.timeoutMs = options.timeoutMs ?? LIBRARR_REQUEST_TIMEOUT_MS
   }
 
   // Duck-typed instead of z.ZodType<T> -- with a `.default()` in the schema, zod's Input and
   // Output types diverge, and binding both to a single generic T via ZodType<T> makes
   // TypeScript infer T from the (optional-fields) Input side, not the parsed Output side.
-  private async request<T>(path: string, schema: { parse: (data: unknown) => T }, init: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    path: string,
+    schema: { parse: (data: unknown) => T },
+    init: RequestInit = {},
+    timeoutMs: number = this.timeoutMs
+  ): Promise<T> {
     const headers = new Headers(init.headers)
     headers.set('x-api-key', this.apiKey)
-    const response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers })
+    // The deadline covers connecting, headers and the body read, so a Librarr that accepts the
+    // connection and then stalls cannot hang the caller either.
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, timeoutMs)
+    let response: Response
     let body: unknown = null
     try {
-      body = await response.json()
-    } catch {
-      body = null
+      response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers, signal: controller.signal })
+      try {
+        body = await response.json()
+      } catch {
+        body = null
+      }
+    } catch (error) {
+      if (timedOut) throw new LibrarrTimeoutError(path, timeoutMs)
+      throw error
+    } finally {
+      clearTimeout(timer)
     }
+    // A body read cut off by the deadline lands in the inner catch as `null`; it is still a timeout.
+    if (timedOut) throw new LibrarrTimeoutError(path, timeoutMs)
     if (!response.ok) {
       const code = classifyError(response.status, body)
       const message =
@@ -81,7 +138,9 @@ export class LibrarrClient {
   async searchAudiobooks(query: string): Promise<LibrarrSearchResult[]> {
     const response = await this.request(
       `/api/search/audiobooks?${new URLSearchParams({ q: query })}`,
-      LibrarrSearchResponseSchema
+      LibrarrSearchResponseSchema,
+      {},
+      this.searchTimeoutMs
     )
     return response.results
   }

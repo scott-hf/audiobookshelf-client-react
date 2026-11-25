@@ -145,7 +145,8 @@ export class AcquisitionService {
         state: 'failed',
         errorCode: isLibrarrError ? error.code : 'librarr_unreachable',
         errorMessage: error instanceof Error ? error.message : 'Unknown error submitting to Librarr',
-        errorRetryable: isLibrarrError ? error.code === 'librarr_error' : true,
+        // A timeout says nothing about the request itself, so it is as retryable as unreachable.
+        errorRetryable: isLibrarrError ? error.code === 'librarr_error' || error.code === 'librarr_timeout' : true,
         lastSuccessfulStage: 'queued',
         updatedAt
       })

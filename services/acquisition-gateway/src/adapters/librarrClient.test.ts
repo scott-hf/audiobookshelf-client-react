@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { LibrarrApiError, LibrarrClient } from './librarrClient'
+import { LibrarrApiError, LibrarrClient, LibrarrTimeoutError } from './librarrClient'
 
 const FIXTURES = path.join(__dirname, '..', '..', 'test', 'fixtures', 'librarr')
 const searchFixture = JSON.parse(readFileSync(path.join(FIXTURES, 'search-audiobooks.json'), 'utf-8'))
@@ -106,5 +106,84 @@ describe('LibrarrClient', () => {
       }) as unknown as typeof fetch
     })
     await expect(down.health()).resolves.toBe(false)
+  })
+
+  describe('deadlines', () => {
+    /** A Librarr that accepts the request and never answers; only the abort signal ends it. */
+    function hangingFetch(): typeof fetch {
+      return vi.fn(
+        (_input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            )
+          })
+      ) as unknown as typeof fetch
+    }
+
+    it('fails a hung search with a distinguishable timeout error instead of hanging', async () => {
+      const client = new LibrarrClient({
+        baseUrl: 'http://librarr:5050',
+        apiKey: 'secret',
+        fetcher: hangingFetch(),
+        searchTimeoutMs: 20
+      })
+      const error = await client.searchAudiobooks('Dune').catch((e) => e)
+
+      expect(error).toBeInstanceOf(LibrarrTimeoutError)
+      expect(error).toBeInstanceOf(LibrarrApiError)
+      expect(error).toMatchObject({ code: 'librarr_timeout', status: 504, timeoutMs: 20 })
+      // The user's search text must not leak into the error message.
+      expect(error.message).not.toContain('Dune')
+      expect(error.message).toContain('/api/search/audiobooks')
+    })
+
+    it('gives other calls their own, shorter budget', async () => {
+      const client = new LibrarrClient({
+        baseUrl: 'http://librarr:5050',
+        apiKey: 'secret',
+        fetcher: hangingFetch(),
+        searchTimeoutMs: 60_000,
+        timeoutMs: 20
+      })
+      await expect(client.getDownloads()).rejects.toMatchObject({ code: 'librarr_timeout', timeoutMs: 20 })
+    })
+
+    it('defaults to a 10s search budget and a 5s budget for everything else', async () => {
+      vi.useFakeTimers()
+      try {
+        const client = new LibrarrClient({ baseUrl: 'http://librarr:5050', apiKey: 'secret', fetcher: hangingFetch() })
+
+        const search = client.searchAudiobooks('Dune').catch((e) => e)
+        const downloads = client.getDownloads().catch((e) => e)
+
+        await vi.advanceTimersByTimeAsync(4_999)
+        expect(await Promise.race([downloads, 'pending'])).toBe('pending')
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await downloads).toMatchObject({ code: 'librarr_timeout', timeoutMs: 5_000 })
+
+        await vi.advanceTimersByTimeAsync(4_999)
+        expect(await Promise.race([search, 'pending'])).toBe('pending')
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await search).toMatchObject({ code: 'librarr_timeout', timeoutMs: 10_000 })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not mistake a slow-but-successful response for a timeout', async () => {
+      const fetcher = fixtureFetch('/api/search/audiobooks', searchFixture)
+      const client = new LibrarrClient({ baseUrl: 'http://librarr:5050', apiKey: 'secret', fetcher, searchTimeoutMs: 20 })
+      await expect(client.searchAudiobooks('Project Hail Mary')).resolves.toHaveLength(3)
+    })
+
+    it('keeps a timeout distinct from a Librarr error response', async () => {
+      const fetcher = fixtureFetch('/api/download/audiobook', { success: false, error: 'boom' }, 500)
+      const client = new LibrarrClient({ baseUrl: 'http://librarr:5050', apiKey: 'secret', fetcher })
+      const error = await client.submitAudiobook(searchFixture.results[0]).catch((e) => e)
+      expect(error).toBeInstanceOf(LibrarrApiError)
+      expect(error).not.toBeInstanceOf(LibrarrTimeoutError)
+      expect(error.code).toBe('librarr_error')
+    })
   })
 })
