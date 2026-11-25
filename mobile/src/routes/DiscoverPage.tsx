@@ -53,6 +53,10 @@ export default function DiscoverPage() {
   const handleSearch = async () => {
     const trimmed = query.trim()
     if (!trimmed || searching) return
+    // Drop focus so Android retracts the soft keyboard. Verified on device: it otherwise stays up
+    // for the whole ~30s search and covers the Cancel search button, which made the way out of a
+    // long search unreachable without first pressing Back.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
     const controller = new AbortController()
     abortRef.current = controller
     setSearching(true)

@@ -91,6 +91,23 @@ describe('DiscoverPage slow search', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  // On the device the soft keyboard stayed up for the whole search and covered "Cancel search".
+  it('drops input focus on submit so the soft keyboard cannot cover Cancel', async () => {
+    const user = userEvent.setup()
+    const searchAudiobooks = vi.fn(() => new Promise<SearchResponse>(() => {}))
+
+    renderDiscover({ searchAudiobooks, listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+    const input = screen.getByLabelText('Search audiobooks')
+    await user.type(input, 'dune')
+    expect(input).toHaveFocus()
+
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+
+    expect(await screen.findByTestId('discover-searching')).toBeInTheDocument()
+    expect(input).not.toHaveFocus()
+  })
+
   it('aborts an in-flight search when the page unmounts', async () => {
     const user = userEvent.setup()
     let abortSignal: AbortSignal | undefined
