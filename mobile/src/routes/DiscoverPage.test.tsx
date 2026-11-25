@@ -61,6 +61,55 @@ function renderDiscover(client: Partial<MobileAcquisitionClient>) {
   )
 }
 
+describe('DiscoverPage slow search', () => {
+  // A real gateway search against this server's Librarr takes ~30s, so the wait itself is a
+  // feature with requirements: it must explain itself and be escapable.
+  it('explains the wait and lets the user cancel a search in flight', async () => {
+    const user = userEvent.setup()
+    let abortSignal: AbortSignal | undefined
+    // Never resolves: stands in for a search still out at the indexers.
+    const searchAudiobooks = vi.fn((_libraryId: string, _q: string, options?: { signal?: AbortSignal }) => {
+      abortSignal = options?.signal
+      return new Promise<SearchResponse>(() => {})
+    })
+
+    renderDiscover({ searchAudiobooks, listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+    await user.type(screen.getByLabelText('Search audiobooks'), 'dune')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+
+    expect(await screen.findByTestId('discover-searching')).toBeInTheDocument()
+    expect(screen.getByText('Searches run against external indexers and usually take 20-40 seconds.')).toBeInTheDocument()
+    expect(abortSignal?.aborted).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: 'Cancel search' }))
+
+    // The request is actually aborted, not merely hidden, and no error is shown for a cancel the
+    // user asked for.
+    expect(abortSignal?.aborted).toBe(true)
+    await waitFor(() => expect(screen.queryByTestId('discover-searching')).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('aborts an in-flight search when the page unmounts', async () => {
+    const user = userEvent.setup()
+    let abortSignal: AbortSignal | undefined
+    const searchAudiobooks = vi.fn((_libraryId: string, _q: string, options?: { signal?: AbortSignal }) => {
+      abortSignal = options?.signal
+      return new Promise<SearchResponse>(() => {})
+    })
+
+    const { unmount } = renderDiscover({ searchAudiobooks, listAcquisitions: vi.fn().mockResolvedValue([]), status: vi.fn().mockResolvedValue(null) })
+
+    await user.type(screen.getByLabelText('Search audiobooks'), 'dune')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByTestId('discover-searching')).toBeInTheDocument()
+
+    unmount()
+    expect(abortSignal?.aborted).toBe(true)
+  })
+})
+
 describe('DiscoverPage', () => {
   it('searches, shows results, and requires confirmation before acquiring', async () => {
     const user = userEvent.setup()
@@ -76,7 +125,8 @@ describe('DiscoverPage', () => {
     await user.click(screen.getByRole('button', { name: 'Search' }))
 
     expect(await screen.findByText('Project Hail Mary')).toBeInTheDocument()
-    expect(searchAudiobooks).toHaveBeenCalledWith('lib1', 'Project Hail Mary')
+    // The third argument carries the cancellation signal the Cancel button and unmount both use.
+    expect(searchAudiobooks).toHaveBeenCalledWith('lib1', 'Project Hail Mary', { signal: expect.any(AbortSignal) })
 
     await user.click(screen.getByRole('button', { name: 'Acquire' }))
     expect(createAcquisition).not.toHaveBeenCalled()

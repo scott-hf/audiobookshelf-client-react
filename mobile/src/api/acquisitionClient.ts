@@ -1,7 +1,7 @@
-import { AcquisitionApiError, createAcquisitionClient, type AcquisitionStatusResponse } from '@abs/acquisition-client'
+import { AcquisitionApiError, AcquisitionTimeoutError, createAcquisitionClient, type AcquisitionStatusResponse } from '@abs/acquisition-client'
 import type { SessionStore } from '../auth/session'
 
-export { AcquisitionApiError }
+export { AcquisitionApiError, AcquisitionTimeoutError }
 export type { AcquisitionStatusResponse }
 
 function withSessionRefreshRetry<Args extends unknown[], T>(session: SessionStore, fn: (...args: Args) => Promise<T>): (...args: Args) => Promise<T> {
@@ -83,6 +83,14 @@ const GATEWAY_ERROR_MESSAGES: Record<string, string> = {
  * Retrying fixes neither, and telling someone to retry hides a server-side misconfiguration.
  */
 export function formatAcquisitionError(error: unknown): string {
+  // Checked before AcquisitionApiError: a deadline means the gateway never answered, so none of
+  // the status-based messages below apply and "try again" is the only honest advice.
+  if (error instanceof AcquisitionTimeoutError) {
+    return 'The acquisition service did not respond in time. It may still be busy -- try again in a moment.'
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return 'Search cancelled.'
+  }
   if (error instanceof AcquisitionApiError) {
     const known = GATEWAY_ERROR_MESSAGES[error.code]
     if (known) return known

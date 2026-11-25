@@ -1,5 +1,5 @@
 import type { SearchRelease, SearchResponse } from '@abs/acquisition-contract'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { formatAcquisitionError, type MobileAcquisitionClient } from '../api/acquisitionClient'
 import { useAuth } from '../auth/AuthProvider'
@@ -30,24 +30,53 @@ export default function DiscoverPage() {
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null)
   const [selected, setSelected] = useState<SearchRelease | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // A gateway search fans out to external indexers through Librarr and measurably takes ~30s on
+  // this server. A single static "Searching…" for that long reads as a hung app, so the wait is
+  // given an elapsed counter, an explanation, and a way out. See MessageMobileSearchingSlowHint.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!searching) return
+    setElapsedSeconds(0)
+    const startedAt = Date.now()
+    const timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000)
+    return () => clearInterval(timer)
+  }, [searching])
+
+  // Abort an in-flight search when the page goes away, so its `setState` cannot land on an
+  // unmounted component and the socket is not left open behind the user.
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   if (!libraryId || !api) return null
 
   const handleSearch = async () => {
     const trimmed = query.trim()
     if (!trimmed || searching) return
+    const controller = new AbortController()
+    abortRef.current = controller
     setSearching(true)
     setError(null)
     try {
-      const response = await api.searchAudiobooks(libraryId, trimmed)
+      const response = await api.searchAudiobooks(libraryId, trimmed, { signal: controller.signal })
       setSearchResult(response)
     } catch (err) {
+      // A cancel the user asked for is not an error worth shouting about: clear the spinner and
+      // leave the previous results and the query alone so they can simply search again.
+      if (controller.signal.aborted) return
       console.error('Audiobook search failed', err)
       setError(formatAcquisitionError(err))
       setSearchResult(null)
     } finally {
+      if (abortRef.current === controller) abortRef.current = null
       setSearching(false)
     }
+  }
+
+  const handleCancelSearch = () => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setSearching(false)
   }
 
   const handleConfirmAcquisition = async () => {
@@ -108,7 +137,17 @@ export default function DiscoverPage() {
         </p>
       )}
 
-      {searching && <LoadingView label={t('MessageMobileSearching')} />}
+      {searching && (
+        <div data-testid="discover-searching">
+          <LoadingView label={t('MessageMobileSearchingElapsed', { seconds: elapsedSeconds })} />
+          <p className="text-foreground-subdued mt-1 text-center text-xs leading-snug">{t('MessageMobileSearchingSlowHint')}</p>
+          <div className="mt-3 flex justify-center">
+            <Btn size="small" color="bg-primary" onClick={handleCancelSearch}>
+              {t('ButtonMobileCancelSearch')}
+            </Btn>
+          </div>
+        </div>
+      )}
 
       {!searching && searchResult && searchResult.results.length === 0 && (
         <PageMessage message={t('MessageMobileNoReleasesFound')} description={t('MessageMobileNoReleasesFoundDescription')} />
